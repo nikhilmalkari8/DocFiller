@@ -26,7 +26,8 @@ Full ceremony applies per global preferences (brainstorm → plan → TDD → ve
 4. Once implemented and tests pass, move the ticket file to `docs/tickets/ready-for-deploy/`
 5. Once actually deployed and confirmed live, move it to `docs/tickets/completed/`
 6. Update `docs/ROADMAP.md` at each transition
-7. If a real architectural/technical decision was made along the way, add an entry to `docs/DECISIONS.md`
+7. If a real architectural/technical decision was made along the way, add one consolidated entry to `docs/DECISIONS.md` once the thread resolves — not one entry per individual discovery along the way
+8. If the feature introduces a new cross-cutting concern that should constrain future related work (auth, payments, a new data-sensitivity class, a new external integration, etc.), propose a new `.claude/rules/<topic>.md` file capturing the invariant — confirm before creating it, same as any other standing constraint
 
 This workflow doesn't apply to non-code work (org/config/docs changes) — see global `CLAUDE.md` for that scope boundary.
 
