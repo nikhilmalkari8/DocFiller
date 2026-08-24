@@ -18,10 +18,9 @@ _(nothing yet — see docs/tickets/pending/ and docs/tickets/ready-for-deploy/ f
 ## Planned
 - Frontend test suite — Vitest + React Testing Library, added as part of the ticket that first builds/changes real frontend component behavior (this is now overdue: a real single-page UI already exists in `frontend/src/app/page.tsx`, contrary to what this file previously said)
 - Eventually: move session storage off in-memory dict to something durable (Redis/DB) before this scales past single-instance/single-session use — not urgent yet, but known debt
-- Confirm the Root Directory fix (below) actually produces a successful auto-deploy end-to-end, not just a config change — check the result of the verification push next session if it isn't already resolved.
 
 ## Done (deployment infra)
-- Vercel project split resolved: `docfiller-app` (the real production project — matches backend CORS, has real traffic) is connected to `nikhilmalkari8/DocFiller` on GitHub, the unrelated stray project `doc-filler` (was auto-deploying instead of the real one) has been deleted, and Root Directory is set to `frontend` via the Vercel CLI (`vercel project update`, not the dashboard — Nikhil couldn't find the field there). See `docs/DECISIONS.md` for the full discovery and whether the fix was verified with an actual successful build.
+- Vercel deployment pipeline fully fixed and confirmed working end-to-end: `docfiller-app` (the real production project) is connected to `nikhilmalkari8/DocFiller` on GitHub with Root Directory set to `frontend`, the unrelated stray project `doc-filler` has been deleted, and a real git-triggered production build succeeded (commit `7329b11`, deployment `dpl_FH42zYQJTHTSh6ZkLg4kp1W1QBkN`, `READY`). Every future push to `main` now auto-deploys both backend (Railway) and frontend (Vercel) with no manual steps. See `docs/DECISIONS.md` for the full discovery.
 
 ## Not planned / explicitly out of scope for now
 _(nothing marked yet)_
