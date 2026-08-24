@@ -1,8 +1,9 @@
 # TICKET-002: Muted dark neutral color palette
 
-**Status:** Ready for Deploy
+**Status:** Completed
 **Created:** 2026-08-23
 **Moved to ready-for-deploy:** 2026-08-23
+**Completed (deployed):** 2026-08-23 — live at https://docfiller-app.vercel.app, confirmed via CSS bundle containing the new `#3f6d8f` accent and no trace of the old `#6366f1`
 
 ## Request
 Nikhil doesn't like the current frontend color scheme (bright indigo/violet/purple gradient accents on a near-black background, purple glows on the stepper/badge/buttons — see screenshot from the deployed Vercel app). He wants the colors updated to be "a bit sophisticated." When asked to pick a direction, he chose: keep the dark theme, but swap the indigo/violet/purple gradient for a restrained slate/graphite palette with a single subdued accent color — reads more "enterprise SaaS" than "AI demo."

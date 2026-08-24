@@ -1,9 +1,9 @@
 # TICKET-001: Backend test suite covering all existing services + API routes
 
-**Status:** Ready for Deploy
+**Status:** Completed
 **Created:** 2026-08-23
 **Moved to ready-for-deploy:** 2026-08-23
-**Completed (deployed):**
+**Completed (deployed):** 2026-08-23 — shipped to Railway as part of commit 8db4260 (bundled with TICKET-002's push); confirmed live via `GET /api/health` → `{"status":"ok"}` at https://docfiller-production-afa9.up.railway.app
 
 ## Request
 "do you think we need to add test cases for what we already have in Dindu?" → "I know it is not TDD for now, atleast we can complete till now, do damage control, so that from next every task any task we can follow strict TDD approach we already have." → "cover everything, everything should be ready to follow strict TDD right from next task I give."
