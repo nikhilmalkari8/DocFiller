@@ -23,12 +23,14 @@ def parse_excel(file_bytes: bytes) -> dict[str, Any]:
 
     # Extract headers from first row
     headers = []
-    for cell in next(ws.iter_rows(min_row=1, max_row=1)):
-        val = cell.value
-        if val is not None:
-            headers.append(str(val).strip())
-        else:
-            break  # Stop at first empty column
+    first_row = next(ws.iter_rows(min_row=1, max_row=1), None)
+    if first_row is not None:
+        for cell in first_row:
+            val = cell.value
+            if val is not None:
+                headers.append(str(val).strip())
+            else:
+                break  # Stop at first empty column
 
     if not headers:
         raise ValueError("Excel file has no column headers in the first row.")
@@ -63,12 +65,14 @@ def get_row_data(file_bytes: bytes, row_index: int = 0) -> dict[str, str]:
     ws = wb.active
 
     headers = []
-    for cell in next(ws.iter_rows(min_row=1, max_row=1)):
-        val = cell.value
-        if val is not None:
-            headers.append(str(val).strip())
-        else:
-            break
+    first_row = next(ws.iter_rows(min_row=1, max_row=1), None)
+    if first_row is not None:
+        for cell in first_row:
+            val = cell.value
+            if val is not None:
+                headers.append(str(val).strip())
+            else:
+                break
 
     target_row = row_index + 2  # +1 for header, +1 for 1-indexed
     row_data = {}
