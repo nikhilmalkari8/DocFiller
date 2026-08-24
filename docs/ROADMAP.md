@@ -18,10 +18,10 @@ _(nothing yet — see docs/tickets/pending/ and docs/tickets/ready-for-deploy/ f
 ## Planned
 - Frontend test suite — Vitest + React Testing Library, added as part of the ticket that first builds/changes real frontend component behavior (this is now overdue: a real single-page UI already exists in `frontend/src/app/page.tsx`, contrary to what this file previously said)
 - Eventually: move session storage off in-memory dict to something durable (Redis/DB) before this scales past single-instance/single-session use — not urgent yet, but known debt
-- Confirm the `docfiller-app` → GitHub auto-deploy actually fires on a real push (connected 2026-08-23, but no push has happened since to prove it end-to-end) — worth checking the next time a frontend change ships. Also worth confirming the project's Root Directory setting is `frontend` in the dashboard, which isn't readable via the current Vercel MCP tools.
+- **Manual step needed (Nikhil, Vercel dashboard):** set `docfiller-app`'s Root Directory to `frontend` (Project Settings → General → Root Directory). Auto-deploy is now correctly wired and does trigger on push, but every triggered build so far has failed (`missing_pages_app`) because Vercel is building from the repo root instead of `frontend/`. Production traffic is unaffected (failed builds never go live), but no frontend change will actually ship via git push until this is set. Not fixable via the current Vercel MCP tools — no field exists to read or set Root Directory on an existing project.
 
 ## Done (deployment infra)
-- Vercel deployment pipeline fixed: `docfiller-app` (the real production project — matches backend CORS, has real traffic) is now connected to `nikhilmalkari8/DocFiller` on GitHub, so pushes to `main` will auto-deploy it going forward. The unrelated stray project `doc-filler` (was auto-deploying instead, but wasn't actually in use) has been deleted. See `docs/DECISIONS.md` for the full discovery and resolution.
+- Vercel project split resolved: `docfiller-app` (the real production project — matches backend CORS, has real traffic) is connected to `nikhilmalkari8/DocFiller` on GitHub, and the unrelated stray project `doc-filler` (was auto-deploying instead of the real one) has been deleted. Auto-deploy triggering is confirmed working. See `docs/DECISIONS.md` for the full discovery and current status — one config step (Root Directory) still needed before the pipeline is actually functional end-to-end.
 
 ## Not planned / explicitly out of scope for now
 _(nothing marked yet)_
