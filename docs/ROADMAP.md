@@ -18,8 +18,10 @@ _(nothing yet — see docs/tickets/pending/ and docs/tickets/ready-for-deploy/ f
 ## Planned
 - Frontend test suite — Vitest + React Testing Library, added as part of the ticket that first builds/changes real frontend component behavior (this is now overdue: a real single-page UI already exists in `frontend/src/app/page.tsx`, contrary to what this file previously said)
 - Eventually: move session storage off in-memory dict to something durable (Redis/DB) before this scales past single-instance/single-session use — not urgent yet, but known debt
-- **Manual step needed (Nikhil, Vercel dashboard):** connect the `docfiller-app` Vercel project to the `nikhilmalkari8/DocFiller` GitHub repo (Project Settings → Git → Connect Repository, root directory `frontend`), so future pushes to `main` auto-deploy. It currently has no git integration — TICKET-002 required a manual CLI/API deploy to go live because of this. See `docs/DECISIONS.md` for the full discovery.
-- **Manual step needed (Nikhil, Vercel dashboard):** delete the stray `doc-filler` Vercel project (id `prj_gz0GblMrKGJ6OcImAHIZTqemOpBk`) — it's GitHub-connected and auto-deploys, but isn't the project actually in use (not in backend CORS allowlist, SSO-protected, no real traffic). No delete-project tool is available via MCP, so this needs the dashboard.
+- Confirm the `docfiller-app` → GitHub auto-deploy actually fires on a real push (connected 2026-08-23, but no push has happened since to prove it end-to-end) — worth checking the next time a frontend change ships. Also worth confirming the project's Root Directory setting is `frontend` in the dashboard, which isn't readable via the current Vercel MCP tools.
+
+## Done (deployment infra)
+- Vercel deployment pipeline fixed: `docfiller-app` (the real production project — matches backend CORS, has real traffic) is now connected to `nikhilmalkari8/DocFiller` on GitHub, so pushes to `main` will auto-deploy it going forward. The unrelated stray project `doc-filler` (was auto-deploying instead, but wasn't actually in use) has been deleted. See `docs/DECISIONS.md` for the full discovery and resolution.
 
 ## Not planned / explicitly out of scope for now
 _(nothing marked yet)_
