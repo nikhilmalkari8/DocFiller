@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useRef, useCallback, DragEvent, ChangeEvent } from "react";
+import { useState, useRef, useEffect, useCallback, DragEvent, ChangeEvent } from "react";
+import JSZip from "jszip";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -12,6 +13,30 @@ interface UploadResponse {
   excel_preview: Record<string, string>[];
   total_rows: number;
   placeholders: string[];
+}
+
+interface BulkResult {
+  row_index: number;
+  status: "ok" | "error" | "skipped";
+  label: string | null;
+  filename: string | null;
+  mime_type: string | null;
+  content_base64: string | null;
+  error: string | null;
+}
+
+function previewFilename(
+  excelPreview: Record<string, string>[],
+  filenameColumn: string,
+  ext: string
+): string {
+  const raw = (excelPreview[0]?.[filenameColumn] ?? "").trim();
+  const sanitized = raw
+    .replace(/[/\\:*?"<>|\x00-\x1f]/g, "_")
+    .replace(/\s+/g, "_")
+    .replace(/^[ .]+|[ .]+$/g, "")
+    .slice(0, 60);
+  return `${sanitized || "row_1"}${ext}`;
 }
 
 export default function Home() {
@@ -39,6 +64,13 @@ export default function Home() {
   // Generated state
   const [generatedBlob, setGeneratedBlob] = useState<Blob | null>(null);
   const [generatedFilename, setGeneratedFilename] = useState("filled_document.pdf");
+
+  // Setup modal / bulk generation state
+  const [showSetupModal, setShowSetupModal] = useState(false);
+  const [filenameColumn, setFilenameColumn] = useState("");
+  const [bulkResults, setBulkResults] = useState<BulkResult[] | null>(null);
+  const [bulkGenerating, setBulkGenerating] = useState(false);
+  const modalSelectRef = useRef<HTMLSelectElement>(null);
 
   // ───── Drag and Drop ─────
   const [dragOver, setDragOver] = useState<"excel" | "template" | null>(null);
@@ -105,9 +137,13 @@ export default function Home() {
       setExcelPreview(data.excel_preview);
       setTotalRows(data.total_rows);
       setPlaceholders(data.placeholders);
+      setFilenameColumn(data.excel_columns[0] || "");
 
       // Auto-map using LLM
       await autoMap(data);
+
+      // Ask how to name/format documents before moving to review
+      setShowSetupModal(true);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Upload failed");
     } finally {
@@ -145,6 +181,23 @@ export default function Home() {
 
     setStep("review");
   };
+
+  const closeSetupModal = useCallback(() => setShowSetupModal(false), []);
+
+  useEffect(() => {
+    if (showSetupModal) {
+      modalSelectRef.current?.focus();
+    }
+  }, [showSetupModal]);
+
+  useEffect(() => {
+    if (!showSetupModal) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeSetupModal();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [showSetupModal, closeSetupModal]);
 
   // ───── Generate ─────
   const handleGenerate = async () => {
@@ -192,6 +245,74 @@ export default function Home() {
     URL.revokeObjectURL(url);
   };
 
+  // ───── Bulk generate all rows ─────
+  const handleGenerateAll = async () => {
+    setBulkGenerating(true);
+    setError(null);
+
+    try {
+      const res = await fetch(`${API_URL}/api/generate-all`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: sessionId,
+          mapping,
+          filename_column: filenameColumn || undefined,
+        }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.detail || "Bulk generation failed");
+      }
+
+      const data = await res.json();
+      setBulkResults(data.results);
+      setStep("generate");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Bulk generation failed");
+    } finally {
+      setBulkGenerating(false);
+    }
+  };
+
+  const handleDownloadResult = (result: BulkResult) => {
+    if (!result.content_base64 || !result.filename || !result.mime_type) return;
+    const binary = atob(result.content_base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const blob = new Blob([bytes], { type: result.mime_type });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = result.filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleDownloadAll = async () => {
+    if (!bulkResults) return;
+    const zip = new JSZip();
+    for (const r of bulkResults) {
+      if (r.status === "ok" && r.content_base64 && r.filename) {
+        zip.file(r.filename, r.content_base64, { base64: true });
+      }
+    }
+    const blob = await zip.generateAsync({ type: "blob" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "filled_documents.zip";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   const handleReset = () => {
     setStep("upload");
     setExcelFile(null);
@@ -205,6 +326,9 @@ export default function Home() {
     setGeneratedBlob(null);
     setGeneratedFilename("filled_document.pdf");
     setError(null);
+    setShowSetupModal(false);
+    setFilenameColumn("");
+    setBulkResults(null);
   };
 
   // ───── Stepper ─────
@@ -260,6 +384,54 @@ export default function Home() {
         <div className="error-banner">
           <span>⚠️</span>
           <p>{error}</p>
+        </div>
+      )}
+
+      {/* Setup modal — name (and eventually format) before generating */}
+      {showSetupModal && (
+        <div
+          className="modal-overlay"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closeSetupModal();
+          }}
+        >
+          <div className="card" role="dialog" aria-modal="true" aria-label="Set up your documents">
+            <h2 className="card-title">Set up your documents</h2>
+            <p className="card-subtitle">
+              Choose which column names each generated file
+            </p>
+
+            <div className="row-selector">
+              <label htmlFor="filename-column-select">Document name from column:</label>
+              <select
+                id="filename-column-select"
+                ref={modalSelectRef}
+                className="mapping-select"
+                value={filenameColumn}
+                onChange={(e) => setFilenameColumn(e.target.value)}
+              >
+                {excelColumns.map((col) => (
+                  <option key={col} value={col}>
+                    {col}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <p className="preview-value">
+              e.g. &quot;{previewFilename(excelPreview, filenameColumn, ".pdf")}&quot;
+            </p>
+
+            <p className="preview-value">Format: PDF — same as your template</p>
+
+            <div className="actions actions-center">
+              <button className="btn btn-primary" onClick={closeSetupModal}>
+                Continue
+              </button>
+              <button className="btn btn-secondary" onClick={closeSetupModal}>
+                Skip
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -358,7 +530,7 @@ export default function Home() {
       )}
 
       {/* Step 2: Review Mapping */}
-      {step === "review" && (
+      {step === "review" && !showSetupModal && (
         <div className="card">
           <h2 className="card-title">Review Field Mapping</h2>
           <p className="card-subtitle">
@@ -378,6 +550,20 @@ export default function Home() {
             />
             <span>of {totalRows} rows (0-indexed)</span>
           </div>
+
+          {filenameColumn && (
+            <div className="row-selector">
+              <span>
+                Naming documents by: <strong>{filenameColumn}</strong>
+              </span>
+              <button
+                className="btn btn-secondary"
+                onClick={() => setShowSetupModal(true)}
+              >
+                Change
+              </button>
+            </div>
+          )}
 
           <table className="mapping-table">
             <thead>
@@ -430,7 +616,7 @@ export default function Home() {
             </button>
             <button
               className="btn btn-success"
-              disabled={loading}
+              disabled={loading || bulkGenerating}
               onClick={handleGenerate}
             >
               {loading ? (
@@ -440,6 +626,20 @@ export default function Home() {
                 </>
               ) : (
                 <>✨ Generate Document</>
+              )}
+            </button>
+            <button
+              className="btn btn-primary"
+              disabled={loading || bulkGenerating}
+              onClick={handleGenerateAll}
+            >
+              {bulkGenerating ? (
+                <>
+                  <span className="spinner" />
+                  Generating...
+                </>
+              ) : (
+                <>📚 Generate All Rows ({totalRows})</>
               )}
             </button>
           </div>
@@ -452,11 +652,20 @@ export default function Home() {
               </span>
             </div>
           )}
+
+          {bulkGenerating && (
+            <div className="status-bar">
+              <div className="spinner" />
+              <span className="status-text">
+                Generating {totalRows} documents…
+              </span>
+            </div>
+          )}
         </div>
       )}
 
-      {/* Step 3: Download */}
-      {step === "generate" && (
+      {/* Step 3: Download (single document) */}
+      {step === "generate" && bulkResults === null && (
         <div className="card success-card">
           <span className="success-icon">🎉</span>
           <h2>Document Ready!</h2>
@@ -465,6 +674,81 @@ export default function Home() {
           <div className="actions actions-center">
             <button className="btn btn-success" onClick={handleDownload}>
               📥 Download Document
+            </button>
+            <button className="btn btn-secondary" onClick={handleReset}>
+              ↻ Fill Another
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Step 3: Bulk results */}
+      {step === "generate" && bulkResults !== null && (
+        <div className="card">
+          <h2 className="card-title">
+            {bulkResults.filter((r) => r.status === "ok").length} of{" "}
+            {bulkResults.length} documents generated
+            {bulkResults.some((r) => r.status === "error") &&
+              ` · ${bulkResults.filter((r) => r.status === "error").length} failed`}
+          </h2>
+
+          {bulkResults.some((r) => r.status === "error") && (
+            <div className="error-banner">
+              <span>⚠️</span>
+              <p>Some documents failed to generate — see the table below.</p>
+            </div>
+          )}
+
+          <div className="actions">
+            <button
+              className="btn btn-primary"
+              onClick={handleDownloadAll}
+              disabled={!bulkResults.some((r) => r.status === "ok")}
+            >
+              📦 Download All ({bulkResults.filter((r) => r.status === "ok").length})
+            </button>
+          </div>
+
+          <table className="mapping-table">
+            <thead>
+              <tr>
+                <th>Document</th>
+                <th>Status</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {bulkResults.map((r) => (
+                <tr key={r.row_index}>
+                  <td>{r.filename || `Row ${r.row_index + 1}`}</td>
+                  <td>
+                    {r.status === "ok" ? (
+                      <span className="preview-value">Ready</span>
+                    ) : (
+                      <span className="status-error">{r.error}</span>
+                    )}
+                  </td>
+                  <td>
+                    {r.status === "ok" && (
+                      <button
+                        className="btn btn-secondary"
+                        onClick={() => handleDownloadResult(r)}
+                      >
+                        📥 Download
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <div className="actions actions-center">
+            <button
+              className="btn btn-secondary"
+              onClick={() => setStep("review")}
+            >
+              ← Back to Mapping
             </button>
             <button className="btn btn-secondary" onClick={handleReset}>
               ↻ Fill Another

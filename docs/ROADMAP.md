@@ -13,14 +13,14 @@ Frontend and backend are being developed together, no strict ordering — work h
 - Frontend color palette: muted slate/steel-blue replaces the old indigo/violet/purple theme — see `docs/tickets/completed/002-muted-dark-color-palette.md`. Deployed and live at https://docfiller-app.vercel.app.
 
 ## In progress
-_(nothing yet — see docs/tickets/pending/ and docs/tickets/ready-for-deploy/ for anything currently active)_
+- TICKET-003 (bulk "generate all rows" + setup modal + naming column) — backend and frontend implemented, all tests passing, real end-to-end check done locally. Not yet through `qa-reviewer` / moved to `ready-for-deploy/`.
+- TICKET-004 (PDF/Word format choice in the setup modal) — planned, depends on TICKET-003 landing first (edits 003's modal and `/api/generate-all`).
 
 ## Planned
-- Frontend test suite — Vitest + React Testing Library, added as part of the ticket that first builds/changes real frontend component behavior (this is now overdue: a real single-page UI already exists in `frontend/src/app/page.tsx`, contrary to what this file previously said)
-- Eventually: move session storage off in-memory dict to something durable (Redis/DB) before this scales past single-instance/single-session use — not urgent yet, but known debt
+_(nothing else queued — see docs/tickets/pending/ for what's active)_
 
 ## Done (deployment infra)
 - Vercel deployment pipeline fully fixed and confirmed working end-to-end: `docfiller-app` (the real production project) is connected to `nikhilmalkari8/DocFiller` on GitHub with Root Directory set to `frontend`, the unrelated stray project `doc-filler` has been deleted, and a real git-triggered production build succeeded (commit `7329b11`, deployment `dpl_FH42zYQJTHTSh6ZkLg4kp1W1QBkN`, `READY`). Every future push to `main` now auto-deploys both backend (Railway) and frontend (Vercel) with no manual steps. See `docs/DECISIONS.md` for the full discovery.
 
 ## Not planned / explicitly out of scope for now
-_(nothing marked yet)_
+- Moving session storage off the in-memory dict (Redis/DB, TTL/cleanup-on-close). Explicitly raised and explicitly declined by Nikhil (2026-08-25) — known debt, staying "until server restart" as-is. Don't build this without being asked again.

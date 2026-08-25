@@ -1,6 +1,6 @@
 import pytest
 
-from services.excel_parser import get_row_data, parse_excel
+from services.excel_parser import get_all_rows, get_row_data, parse_excel
 from tests.conftest import make_excel_bytes
 
 
@@ -60,3 +60,33 @@ def test_get_row_data_on_completely_empty_workbook_returns_empty_dict():
     # Same StopIteration risk as parse_excel's no-headers case — regression guard
     # for the identical fix applied to this function.
     assert get_row_data(make_excel_bytes([], []), 0) == {}
+
+
+def test_get_all_rows_returns_every_data_row():
+    xb = make_excel_bytes(
+        ["Name", "Date"],
+        [
+            ["John Doe", "2024-01-15"],
+            ["Jane Smith", "2024-02-20"],
+            ["Ann Lee", "2024-03-01"],
+        ],
+    )
+
+    rows = get_all_rows(xb)
+
+    assert rows == [
+        get_row_data(xb, 0),
+        get_row_data(xb, 1),
+        get_row_data(xb, 2),
+    ]
+    assert rows == [
+        {"Name": "John Doe", "Date": "2024-01-15"},
+        {"Name": "Jane Smith", "Date": "2024-02-20"},
+        {"Name": "Ann Lee", "Date": "2024-03-01"},
+    ]
+
+
+def test_get_all_rows_on_headers_only_sheet_returns_empty_list():
+    xb = make_excel_bytes(["Name", "Date"], [])
+
+    assert get_all_rows(xb) == []

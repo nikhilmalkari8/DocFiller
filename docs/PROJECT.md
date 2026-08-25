@@ -34,11 +34,12 @@ This is not experimental — real client documents (e.g. bond forms, financial p
 - `GET /api/health` — health check
 - `POST /api/upload` — accepts Excel + template files, returns session_id, excel columns/preview, template placeholders
 - `POST /api/map` — given session_id + columns + placeholders, returns LLM-generated mapping
-- `POST /api/generate` — given session_id + mapping + row index, returns the filled document (PDF or Word) as a file download
+- `POST /api/generate` — given session_id + mapping + row index (+ optional `filename_column`), returns the filled document (PDF or Word) as a file download
+- `POST /api/generate-all` — given session_id + mapping (+ optional `filename_column`), fills every row in the sheet in one request and returns all documents inline as base64 (nothing retained server-side); capped at 200 rows (`MAX_BULK_ROWS`), returns partial success per row (`ok`/`error`/`skipped`) rather than failing the whole batch on one bad row
 
 ## Known limitations (intentional, for now)
-- Sessions are in-memory only — won't survive a server restart or scale across multiple backend instances. Flagged in code as MVP-only (`main.py`).
-- No test suite exists yet, for either backend or frontend.
+- Sessions are in-memory only — won't survive a server restart or scale across multiple backend instances. Flagged in code as MVP-only (`main.py`). Deliberately not changing this — see `docs/DECISIONS.md`.
+- No frontend component test suite existed until TICKET-003 (Vitest + RTL, `frontend/src/app/page.test.tsx`); backend has a full pytest suite (`backend/tests/`).
 - No authentication/authorization on any endpoint.
 
 ## Where to look for more

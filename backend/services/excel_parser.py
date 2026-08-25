@@ -84,3 +84,33 @@ def get_row_data(file_bytes: bytes, row_index: int = 0) -> dict[str, str]:
 
     wb.close()
     return row_data
+
+
+def get_all_rows(file_bytes: bytes) -> list[dict[str, str]]:
+    """
+    Get data for every data row in the sheet (0-indexed from data rows, not header).
+    Opens the workbook once, unlike calling get_row_data in a loop.
+    """
+    wb = openpyxl.load_workbook(BytesIO(file_bytes), read_only=True, data_only=True)
+    ws = wb.active
+
+    headers = []
+    first_row = next(ws.iter_rows(min_row=1, max_row=1), None)
+    if first_row is not None:
+        for cell in first_row:
+            val = cell.value
+            if val is not None:
+                headers.append(str(val).strip())
+            else:
+                break
+
+    rows = []
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        row_data = {}
+        for i, header in enumerate(headers):
+            val = row[i] if i < len(row) else None
+            row_data[header] = str(val) if val is not None else ""
+        rows.append(row_data)
+
+    wb.close()
+    return rows

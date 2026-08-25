@@ -1,4 +1,5 @@
 """DocFiller – Intelligent Document Filler API."""
+import base64
 import os
 import uuid
 from typing import Optional
@@ -11,12 +12,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from services.excel_parser import parse_excel, get_row_data
+from services.excel_parser import parse_excel, get_row_data, get_all_rows
+from services.filenames import build_filenames
 from services.pdf_processor import extract_placeholders, fill_pdf
 from services.word_processor import extract_merge_fields, fill_word_template
 from services.llm_mapper import map_fields
 
 app = FastAPI(title="DocFiller API", version="1.0.0")
+
+MAX_BULK_ROWS = 200
 
 # CORS for Next.js frontend
 app.add_middleware(
@@ -47,6 +51,13 @@ class GenerateRequest(BaseModel):
     session_id: str
     mapping: dict[str, str]
     row_index: Optional[int] = 0
+    filename_column: Optional[str] = None
+
+
+class GenerateAllRequest(BaseModel):
+    session_id: str
+    mapping: dict[str, str]
+    filename_column: Optional[str] = None
 
 
 @app.get("/api/health")
@@ -146,6 +157,35 @@ async def map_columns(request: MapRequest):
     return {"mapping": mapping}
 
 
+def _build_fill_values(mapping: dict[str, str], row_data: dict[str, str]) -> dict[str, str]:
+    """Build the values dict: placeholder_name -> actual value from Excel."""
+    fill_values = {}
+    for placeholder, column in mapping.items():
+        if column and column in row_data:
+            fill_values[placeholder] = row_data[column]
+        else:
+            fill_values[placeholder] = ""  # Leave empty if no mapping
+    return fill_values
+
+
+def _fill_document(session: dict, fill_values: dict[str, str]) -> tuple[bytes, str, str]:
+    """Fill the template (PDF or Word). Returns (bytes, mime_type, ext)."""
+    template_type = session.get("template_type", "pdf")
+    template_ext = session.get("template_ext", ".pdf")
+
+    if template_type == "word":
+        filled_doc = fill_word_template(session["template_bytes"], fill_values)
+        mime_type = (
+            "application/vnd.ms-word.document.macroEnabled.12"
+            if template_ext == ".docm"
+            else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+        return filled_doc, mime_type, template_ext
+    else:
+        filled_doc = fill_pdf(session["template_bytes"], fill_values)
+        return filled_doc, "application/pdf", ".pdf"
+
+
 @app.post("/api/generate")
 async def generate_document(request: GenerateRequest):
     """
@@ -161,33 +201,17 @@ async def generate_document(request: GenerateRequest):
     except Exception as e:
         raise HTTPException(400, f"Failed to read row {request.row_index}: {str(e)}")
 
-    # Build the values dict: placeholder_name -> actual value from Excel
-    fill_values = {}
-    for placeholder, column in request.mapping.items():
-        if column and column in row_data:
-            fill_values[placeholder] = row_data[column]
-        else:
-            fill_values[placeholder] = ""  # Leave empty if no mapping
-
-    # Fill the template (PDF or Word)
-    template_type = session.get("template_type", "pdf")
-    template_ext = session.get("template_ext", ".pdf")
+    fill_values = _build_fill_values(request.mapping, row_data)
 
     try:
-        if template_type == "word":
-            filled_doc = fill_word_template(session["template_bytes"], fill_values)
-            mime_type = (
-                "application/vnd.ms-word.document.macroEnabled.12"
-                if template_ext == ".docm"
-                else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            )
-            filename = f"filled_document{template_ext}"
-        else:
-            filled_doc = fill_pdf(session["template_bytes"], fill_values)
-            mime_type = "application/pdf"
-            filename = "filled_document.pdf"
+        filled_doc, mime_type, template_ext = _fill_document(session, fill_values)
     except Exception as e:
         raise HTTPException(500, f"Failed to generate document: {str(e)}")
+
+    if request.filename_column:
+        filename = build_filenames([row_data], request.filename_column, template_ext)[0]
+    else:
+        filename = f"filled_document{template_ext}"
 
     return Response(
         content=filled_doc,
@@ -196,6 +220,89 @@ async def generate_document(request: GenerateRequest):
             "Content-Disposition": f'attachment; filename="{filename}"',
         },
     )
+
+
+@app.post("/api/generate-all")
+async def generate_all_documents(request: GenerateAllRequest):
+    """
+    Generate a filled document for every row in the Excel sheet.
+    Returns all documents inline as base64 — nothing is retained server-side.
+    """
+    session = sessions.get(request.session_id)
+    if not session:
+        raise HTTPException(404, "Session not found. Please re-upload files.")
+
+    rows = get_all_rows(session["excel_bytes"])
+
+    if len(rows) > MAX_BULK_ROWS:
+        raise HTTPException(
+            400,
+            f"Too many rows ({len(rows)}). Bulk generation is limited to {MAX_BULK_ROWS} rows per request.",
+        )
+
+    template_ext = session.get("template_ext", ".pdf")
+    filenames = build_filenames(rows, request.filename_column, template_ext)
+
+    results = []
+    success_count = 0
+    error_count = 0
+    skipped_count = 0
+
+    for i, row_data in enumerate(rows):
+        fill_values = _build_fill_values(request.mapping, row_data)
+        label = row_data.get(request.filename_column) if request.filename_column else None
+
+        if not any(fill_values.values()):
+            skipped_count += 1
+            results.append(
+                {
+                    "row_index": i,
+                    "status": "skipped",
+                    "label": label,
+                    "filename": None,
+                    "mime_type": None,
+                    "content_base64": None,
+                    "error": "Row has no data for any mapped column",
+                }
+            )
+            continue
+
+        try:
+            filled_doc, mime_type, _ = _fill_document(session, fill_values)
+            results.append(
+                {
+                    "row_index": i,
+                    "status": "ok",
+                    "label": label,
+                    "filename": filenames[i],
+                    "mime_type": mime_type,
+                    "content_base64": base64.b64encode(filled_doc).decode(),
+                    "error": None,
+                }
+            )
+            success_count += 1
+        except Exception as e:
+            error_count += 1
+            results.append(
+                {
+                    "row_index": i,
+                    "status": "error",
+                    "label": label,
+                    "filename": None,
+                    "mime_type": None,
+                    "content_base64": None,
+                    "error": f"Failed to fill template: {str(e)}",
+                }
+            )
+
+    return {
+        "total_rows": len(rows),
+        "success_count": success_count,
+        "error_count": error_count,
+        "skipped_count": skipped_count,
+        "results": results,
+    }
+
 
 if __name__ == "__main__":
     import uvicorn

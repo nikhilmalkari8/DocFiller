@@ -596,3 +596,27 @@ body::before {
     padding: 24px 16px;
   }
 }
+
+/* ───── Setup modal ───── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 100;
+}
+
+.modal-overlay .card {
+  max-width: 480px;
+  width: 100%;
+  animation: fadeIn 0.2s ease-out;
+}
+
+/* ───── Bulk result failure text ───── */
+.status-error {
+  color: var(--danger);
+  font-size: 12px;
+}

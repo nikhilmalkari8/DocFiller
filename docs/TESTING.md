@@ -3,7 +3,7 @@
 ## Current state
 Backend: full test suite exists (46 tests, `backend/tests/`), covering all four service modules plus all three API routes — see `docs/tickets/ready-for-deploy/001-backend-test-suite.md` (moves to `completed/` once deployed) for what it covers and why. This was a one-time retroactive pass to establish a baseline; every ticket from here on follows strict TDD (failing test before implementation), regardless of task size, per standing preference in the global `CLAUDE.md`.
 
-Frontend: a real single-page UI already exists (`frontend/src/app/page.tsx`, `globals.css`) — this was previously and incorrectly described here as "still the default Next.js starter." No component-level test suite yet; Vitest + RTL still lands as part of the first ticket that builds/changes real component behavior (that ticket is now overdue). See "Frontend — interim token harness" below for the one exception that exists today.
+Frontend: a real single-page UI exists (`frontend/src/app/page.tsx`, `globals.css`). Vitest + RTL landed with TICKET-003 (bulk "generate all rows" + setup modal), the first ticket that changed real component behavior. See "Frontend — Vitest + React Testing Library" below for conventions, and "Frontend — interim token harness" for the earlier CSS-only exception (TICKET-002).
 
 ## Backend — pytest
 `pytest` and `httpx` (for FastAPI's `TestClient`) are in `backend/requirements.txt`.
@@ -15,11 +15,11 @@ Any test touching LLM mapping (`services/llm_mapper.py`) must mock `_map_with_op
 Run with: `pytest` from `backend/`.
 
 ## Frontend — Vitest + React Testing Library
-Modern standard for Next.js App Router projects. Not yet added to `frontend/package.json` — add it when the first frontend component/test is written.
+Set up per `frontend/node_modules/next/dist/docs/01-app/02-guides/testing/vitest.md` (version-specific — check that doc before assuming a different Next.js version's setup applies, per `frontend/AGENTS.md`'s version-drift rule). Config: `frontend/vitest.config.mts`, `environment: 'jsdom'`, scoped to `include: ['src/**/*.test.{ts,tsx}']` so it doesn't collide with the separate `node:test`-based `test:tokens` harness in `frontend/tests/`.
 
-Convention: colocate test files next to what they test — `Component.tsx` + `Component.test.tsx` in the same folder.
+Convention: colocate test files next to what they test — `page.tsx` + `page.test.tsx` in the same folder. RTL tests stub `fetch` via `vi.stubGlobal` and must also stub `URL.createObjectURL`/`revokeObjectURL`, which jsdom does not implement. Call `cleanup()` (from `@testing-library/react`) and `vi.unstubAllGlobals()` in `afterEach` — Vitest does not auto-cleanup between tests by default the way Jest does.
 
-Run with: `npm run test` from `frontend/` (add this script when Vitest is set up). The `test` script name is deliberately reserved for Vitest — don't repurpose it for the interim harness below.
+Run with: `npm run test` from `frontend/`. The `test` script name is reserved for Vitest — don't repurpose it for the interim harness below.
 
 ## Frontend — interim token harness (`test:tokens`)
 For TICKET-002 (color palette change), there was no frontend test runner yet and nothing to TDD in the traditional sense — a pure CSS design-token swap has no logic to exercise with component tests. Rather than bootstrap Vitest+RTL as a side effect of a styling ticket (conflating a test-infra decision with a styling change), a zero-dependency harness was added: `frontend/tests/design-tokens.test.mjs`, run via Node's built-in `node:test` (`npm run test:tokens` from `frontend/`). It asserts old color literals are absent, new tokens match agreed values, and — the one part that's a genuine regression test rather than a lint rule — that every text/background and button-label/fill color pair clears WCAG AA (4.5:1 contrast), computed in the test itself. This harness is scoped to design tokens only; it doesn't replace Vitest+RTL, which still lands with the first component-behavior ticket.

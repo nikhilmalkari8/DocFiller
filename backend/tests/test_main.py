@@ -204,6 +204,23 @@ def test_generate_word_docm_uses_macro_enabled_mime_type(client):
     assert 'filename="filled_document.docm"' in resp.headers["content-disposition"]
 
 
+def test_generate_with_filename_column_names_file_from_that_column(client):
+    session_id = _upload(client).json()["session_id"]
+
+    resp = client.post(
+        "/api/generate",
+        json={
+            "session_id": session_id,
+            "mapping": {"Name": "Name", "Date": "Date"},
+            "row_index": 0,
+            "filename_column": "Name",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert 'filename="John_Doe.pdf"' in resp.headers["content-disposition"]
+
+
 def test_generate_with_out_of_range_row_index_produces_blank_fields(client):
     """Documents current behavior: get_row_data returns {} for an out-of-range row
     rather than raising, so /api/generate still succeeds but fills nothing. Not a
@@ -218,3 +235,152 @@ def test_generate_with_out_of_range_row_index_produces_blank_fields(client):
 
     assert resp.status_code == 200
     assert b"John Doe" not in resp.content
+
+
+# --- /api/generate-all ---
+
+
+def _upload_multi(client, rows, headers=("Name", "Date"), template_bytes=None, template_name="template.pdf"):
+    excel_bytes = make_excel_bytes(list(headers), rows)
+    template_bytes = template_bytes or make_pdf_bytes(list(headers))
+    return _upload(client, excel_bytes=excel_bytes, template_bytes=template_bytes, template_name=template_name)
+
+
+def test_generate_all_unknown_session_returns_404(client):
+    resp = client.post("/api/generate-all", json={"session_id": "does-not-exist", "mapping": {}})
+    assert resp.status_code == 404
+
+
+def test_generate_all_three_row_pdf_success_with_filename_column(client):
+    session_id = _upload_multi(
+        client,
+        [["John Doe", "2024-01-15"], ["Jane Smith", "2024-02-20"], ["Ann Lee", "2024-03-01"]],
+    ).json()["session_id"]
+
+    resp = client.post(
+        "/api/generate-all",
+        json={
+            "session_id": session_id,
+            "mapping": {"Name": "Name", "Date": "Date"},
+            "filename_column": "Name",
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total_rows"] == 3
+    assert body["success_count"] == 3
+    assert body["error_count"] == 0
+    assert body["skipped_count"] == 0
+
+    filenames = [r["filename"] for r in body["results"]]
+    assert filenames == ["John_Doe.pdf", "Jane_Smith.pdf", "Ann_Lee.pdf"]
+
+    import base64
+
+    expected_values = [b"John Doe", b"Jane Smith", b"Ann Lee"]
+    for result, expected in zip(body["results"], expected_values):
+        assert result["status"] == "ok"
+        decoded = base64.b64decode(result["content_base64"])
+        assert decoded.startswith(b"%PDF")
+        assert expected in decoded
+
+
+def test_generate_all_without_filename_column_uses_row_numbers(client):
+    session_id = _upload_multi(
+        client, [["John Doe", "2024-01-15"], ["Jane Smith", "2024-02-20"]]
+    ).json()["session_id"]
+
+    resp = client.post(
+        "/api/generate-all",
+        json={"session_id": session_id, "mapping": {"Name": "Name", "Date": "Date"}},
+    )
+
+    assert resp.status_code == 200
+    filenames = [r["filename"] for r in resp.json()["results"]]
+    assert filenames == ["row_1.pdf", "row_2.pdf"]
+
+
+def test_generate_all_word_docm_template(client):
+    session_id = _upload_multi(
+        client,
+        [["John Doe", "2024-01-15"]],
+        template_bytes=make_docx_bytes(["Name", "Date"]),
+        template_name="t.docm",
+    ).json()["session_id"]
+
+    resp = client.post(
+        "/api/generate-all",
+        json={"session_id": session_id, "mapping": {"Name": "Name", "Date": "Date"}},
+    )
+
+    assert resp.status_code == 200
+    result = resp.json()["results"][0]
+    assert result["mime_type"] == "application/vnd.ms-word.document.macroEnabled.12"
+    assert result["filename"].endswith(".docm")
+
+
+def test_generate_all_partial_failure_does_not_block_other_rows(client, monkeypatch):
+    session_id = _upload_multi(
+        client,
+        [["John Doe", "2024-01-15"], ["Jane Smith", "2024-02-20"], ["Ann Lee", "2024-03-01"]],
+    ).json()["session_id"]
+
+    import main as main_module
+
+    real_fill_pdf = main_module.fill_pdf
+
+    def flaky_fill_pdf(template_bytes, values):
+        if values.get("Name") == "Jane Smith":
+            raise RuntimeError("simulated fill failure")
+        return real_fill_pdf(template_bytes, values)
+
+    monkeypatch.setattr(main_module, "fill_pdf", flaky_fill_pdf)
+
+    resp = client.post(
+        "/api/generate-all",
+        json={"session_id": session_id, "mapping": {"Name": "Name", "Date": "Date"}},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success_count"] == 2
+    assert body["error_count"] == 1
+    assert body["results"][0]["status"] == "ok"
+    assert body["results"][0]["content_base64"] is not None
+    assert body["results"][1]["status"] == "error"
+    assert body["results"][1]["error"] is not None
+    assert body["results"][1]["content_base64"] is None
+    assert body["results"][2]["status"] == "ok"
+    assert body["results"][2]["content_base64"] is not None
+
+
+def test_generate_all_row_with_all_mapped_columns_empty_is_skipped(client):
+    session_id = _upload_multi(
+        client,
+        [["John Doe", "2024-01-15"], ["", ""]],
+    ).json()["session_id"]
+
+    resp = client.post(
+        "/api/generate-all",
+        json={"session_id": session_id, "mapping": {"Name": "Name", "Date": "Date"}},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["skipped_count"] == 1
+    assert body["results"][1]["status"] == "skipped"
+    assert body["results"][1]["content_base64"] is None
+
+
+def test_generate_all_too_many_rows_returns_400(client):
+    rows = [[f"Person {i}", "2024-01-01"] for i in range(201)]
+    session_id = _upload_multi(client, rows).json()["session_id"]
+
+    resp = client.post(
+        "/api/generate-all",
+        json={"session_id": session_id, "mapping": {"Name": "Name", "Date": "Date"}},
+    )
+
+    assert resp.status_code == 400
+    assert "limited to 200 rows" in resp.json()["detail"]
