@@ -1,8 +1,9 @@
 # TICKET-004: Let user choose output format (Word or PDF) in the setup modal
 
-**Status:** Pending
+**Status:** Ready for Deploy
 **Created:** 2026-08-25
 **Revised:** 2026-08-24 (re-planned after TICKET-003 introduced the setup modal; the earlier per-download format selector design is superseded)
+**QA-reviewed:** 2026-08-25 (2 bugs found and fixed — see QA review section below)
 
 ## Request
 Nikhil: "I want the documents to be available as pdf too. User should be able to have an option to download their desired format, pdf or docx or their original one itself."
@@ -26,11 +27,18 @@ If 003's shape changes during implementation, re-check steps 7–11 and 13–14 
 
 **Note on a small inaccuracy in 003's plan:** its modal renders a hardcoded `Format: PDF — same as your template` line. That's wrong for a Word template (which is not a PDF), and 003 has no way to know the template type because `/api/upload` doesn't return it. This ticket adds `template_type` to `/api/upload` (step 6) and makes the line correct for both cases.
 
+## Correction: this service builds with Railpack, not Nixpacks — `nixpacks.toml`'s `aptPkgs` is dead config
+Confirmed via `mcp__railway__get-service-config` earlier this session: `"build":{"builder":"RAILPACK"}`. `backend/nixpacks.toml` exists in the repo but is very likely never read by the actual build — Railway's real mechanism for installing apt packages under Railpack is two **service environment variables** (confirmed against Railway's own docs and railpack.com, space-separated package lists):
+- `RAILPACK_BUILD_APT_PACKAGES` — installed during build only
+- `RAILPACK_DEPLOY_APT_PACKAGES` — installed into the **final image**, i.e. available at runtime
+
+We need `soffice` available at *runtime* (a conversion request can arrive any time after deploy), so this uses `RAILPACK_DEPLOY_APT_PACKAGES`, set directly as a Railway service variable via `mcp__railway__set-variables` — not a file in the repo. `nixpacks.toml` is left in place (harmless, not deleted — out of scope to clean up here) but is not the mechanism that does anything on this service.
+
 ## Proposed design
 
-### 1. Conversion engine: LibreOffice headless via subprocess, installed with nixpacks `aptPkgs`
+### 1. Conversion engine: LibreOffice headless via subprocess, installed via a Railway service variable
 
-**Recommendation: `soffice --headless --convert-to pdf`, with LibreOffice installed into the Railway image via `aptPkgs` in `backend/nixpacks.toml`.**
+**Recommendation: `soffice --headless --convert-to pdf`, with LibreOffice installed into the Railway image via `RAILPACK_DEPLOY_APT_PACKAGES` (see correction above — not `nixpacks.toml`, which this service's actual builder doesn't read).**
 
 Why, against the alternatives actually considered:
 
@@ -38,15 +46,13 @@ Why, against the alternatives actually considered:
 - **Third-party cloud conversion APIs (CloudConvert, Adobe, etc.) are rejected on data-handling grounds.** This project already sends *column names, placeholder names and preview values* to OpenAI/Gemini for mapping (see `docs/PROJECT.md`). A conversion API is a materially bigger exposure: it receives the **complete filled client document** — every field, fully populated — not just schema hints. Adding a second third party that sees whole documents, for a feature that can be done locally, isn't a trade worth making here. (If Nikhil disagrees, this is worth an explicit decision entry rather than a silent one.)
 - **LibreOffice is the reference implementation for OOXML → PDF fidelity** outside of Word itself, is what almost every self-hosted document pipeline uses, and keeps every byte of the client document inside the existing Railway container.
 
-Install mechanism — `aptPkgs`, not `nixPkgs`:
+Install mechanism — `RAILPACK_DEPLOY_APT_PACKAGES` Railway service variable:
 
-```toml
-[phases.setup]
-nixPkgs = ["mupdf", "swig", "freetype", "harfbuzz", "openjpeg", "jbig2dec", "libjpeg", "pkg-config"]
-aptPkgs = ["libreoffice-writer", "fonts-liberation"]
+```
+RAILPACK_DEPLOY_APT_PACKAGES=libreoffice-writer fonts-liberation
 ```
 
-`aptPkgs` is a documented nixpacks phase field (verified against https://nixpacks.com/docs/configuration/file — "Apt packages: list of packages to install with `apt-get`"), and the nixpacks build image is Debian-based, so this works alongside the existing `nixPkgs` list rather than replacing it. Debian's `libreoffice-writer` (which pulls `libreoffice-core`, providing `/usr/bin/soffice` and the `writer_pdf_Export` filter) is a few hundred MB; the nixpkgs `libreoffice` derivation drags in a much larger GUI closure and is the wrong tool here. `fonts-liberation` supplies metric-compatible substitutes for Arial/Times New Roman — without it, a template using Word's default fonts reflows in the PDF and can push text off a form field. No Java is needed: Writer's PDF export doesn't require it (that's Base/wizards).
+Space-separated (confirmed against railpack.com's own docs), set via `mcp__railway__set-variables` on the backend service directly — not a file in the repo. Debian's `libreoffice-writer` (which pulls `libreoffice-core`, providing `/usr/bin/soffice` and the `writer_pdf_Export` filter) is a few hundred MB. `fonts-liberation` supplies metric-compatible substitutes for Arial/Times New Roman — without it, a template using Word's default fonts reflows in the PDF and can push text off a form field. No Java is needed: Writer's PDF export doesn't require it (that's Base/wizards). Deploy-time (not build-time) is required since `soffice` needs to exist in the *running* container for conversion requests, not just during the build.
 
 Expected cost: image grows by roughly 0.5–1 GB and the Railway build gets a couple of minutes longer. **This is not a proven number — it must be verified against the actual Railway build**, which is why the plan verifies it empirically rather than assuming.
 
@@ -182,7 +188,7 @@ Frontend: **no test-infra work in this ticket.** TICKET-003 bootstraps Vitest + 
 
 11. Implement `/api/generate-all`'s format support: `output_format` on `GenerateAllRequest`, `_resolve_output` reused, resolved `ext` passed into `build_filenames`, availability check before the fill loop, fill all rows first then one `convert_many_to_pdf` over the `ok` rows' flattened bytes (under the same semaphore, via `run_in_threadpool`), `None` slots downgraded to per-row `status: "error"` → verify: step-10 tests pass; 003's generate-all tests pass unmodified; full `python -m pytest -q` green
 
-12. Add `aptPkgs = ["libreoffice-writer", "fonts-liberation"]` to `[phases.setup]` in `backend/nixpacks.toml` → verify: deferred to step 18 — this genuinely cannot be verified locally (nixpacks isn't installed; the build only runs on Railway). Do NOT claim it works before that step
+12. Set `RAILPACK_DEPLOY_APT_PACKAGES=libreoffice-writer fonts-liberation` as a Railway service variable on the backend service (`mcp__railway__set-variables`) → verify: `mcp__railway__list-variables` shows the variable set; full effect (does `soffice` actually land in the deployed container) deferred to step 18 — this cannot be verified locally, the build only runs on Railway. Do NOT claim it works before that step
 
 13. Extend `frontend/src/app/page.test.tsx`'s `renderAndUpload()` helper to include `template_type` in the stubbed `/api/upload` response and accept it as a parameter, then add failing RTL tests: (a) Word template → the modal renders a Format combobox with `Word` and `PDF` options, defaulting to Word; (b) PDF template → **no** Format combobox, the static `same as your template` line instead; (c) selecting PDF updates the filename preview's extension from `.docm` to `.pdf`; (d) after Continue, the Review step shows the chosen format next to `Naming documents by:`; (e) `Generate Document` POSTs `output_format: "pdf"` in its body; (f) `Generate All Rows` POSTs `output_format: "pdf"` in its body; (g) leaving the default and generating sends `output_format: "original"`; (h) `Fill Another` resets the choice — re-uploading shows the Format select back on Word → verify: `cd frontend && npm run test` fails on exactly these eight, with all of 003's existing tests still passing
 
@@ -197,21 +203,61 @@ Frontend: **no test-infra work in this ticket.** TICKET-003 bootstraps Vitest + 
 18. Deploy to Railway and verify the system dependency really landed → verify: Railway build logs show `libreoffice-writer` installed; `curl https://docfiller-production-afa9.up.railway.app/api/health` returns `"pdf_conversion": true`; then a real upload → generate-all → PDF round trip against the live site using a **synthetic** template (never a real client document) returns correctly filled PDFs without a gateway timeout. Record observed build time, image size, and bulk-run duration. Only then move this ticket to `completed/` (`ready-for-deploy/` until this passes)
 ```
 
-## Open questions / risks (decide before implementation starts)
+## Open questions / risks
 
-1. **Batch conversion vs. one `soffice` per document.** Planned as batch-with-individual-retry (section 3) because N cold starts is the difference between ~10 s and ~60 s for a 5-row run. The simpler alternative is a plain loop calling `convert_to_pdf` per row — less code, perfect failure isolation, much slower. Recommendation: batch. Say if you'd rather ship the dumb loop first and optimise only if it's actually too slow.
-2. **Row cap for PDF bulk runs.** TICKET-003's `MAX_BULK_ROWS = 200` was sized for filling only. 200 conversions in one synchronous request is a plausible platform-timeout (Railway/proxy) and could take minutes. Options: keep 200 and accept the risk; add a lower `MAX_BULK_PDF_ROWS` (e.g. 50) rejected with a clear message; or leave it and revisit after step 16's measured timing. **Recommendation: leave the cap alone until step 16 gives a real number, then decide** — but this is a deliberate open item, not an oversight.
-3. **Concurrency limiter is now in scope** (previously deferred): a module-level `asyncio.Semaphore(1)` serialises all conversions process-wide. Cost is that two users converting at once queue rather than run in parallel; benefit is not OOM-ing a small container with two 300 MB LibreOffice processes on an API with no auth. Flag if you'd rather allow 2.
-4. **Image size / build time on Railway is estimated, not measured.** If the build fails or gets unacceptably slow, the fallback is the Gotenberg sidecar service described in section 1 — same `format_converter` interface, so the backend change survives.
-5. **This ticket cannot start before TICKET-003 lands.** It edits 003's modal, 003's `/api/generate-all`, 003's `build_filenames` call sites and 003's test file. Doing them in the other order means re-planning both.
-6. **`docx` as an API value the UI never sends.** Kept on the `Literal` as an explicit synonym for `original` (and as the thing that 400s on a PDF template) so the API says what it means; the frontend only ever sends `original` or `pdf`. Alternative is dropping `docx` entirely and letting a PDF template + `original` be the only path — simpler API, slightly less self-describing. Low stakes either way.
-7. **Untouched by design:** in-memory sessions, PDF→DOCX, and the Word download path's current bytes. `output_format` is additive and optional on both endpoints, so every existing caller keeps working unchanged.
+Resolved (Nikhil confirmed the recommended default for each, earlier this session): (1) batch conversion with per-file retry, not a plain per-row loop; (3) `Semaphore(1)` concurrency limiter, not allow-2; (6) `docx` stays on the API `Literal` as an explicit synonym even though the UI never sends it. (5) is resolved by landing order — TICKET-003 is now in `ready-for-deploy/`, so this ticket can proceed.
+
+Still genuinely open, decided empirically rather than guessed:
+2. **Row cap for PDF bulk runs.** `MAX_BULK_ROWS = 200` was sized for filling only; 200 conversions in one synchronous request is a plausible platform-timeout. Left alone until step 16's measured timing gives a real number to decide from.
+4. **Image size / build time on Railway is estimated, not measured**, and the install mechanism changed from the original plan (Railpack service variable, not `nixpacks.toml` — see the correction above `## Proposed design`). If the build fails or gets unacceptably slow, the fallback is the Gotenberg sidecar service described in section 1 — same `format_converter` interface, so the backend change survives.
+
+Untouched by design: in-memory sessions (explicitly left as-is, see `docs/DECISIONS.md` 2026-08-25), PDF→DOCX, and the Word download path's current bytes. `output_format` is additive and optional on both endpoints, so every existing caller keeps working unchanged.
+
+**Known limitation, accepted rather than fixed (found in QA review below):** `flatten_merge_fields`'s regex targets the classic Word mail-merge field shape (`fldChar begin` / `instrText` / `fldChar separate` / `fldChar end` runs), which is what this app's own `word_processor.py` produces and what real Word mail-merge/MERGEFIELD templates use. It does not handle the less common `<w:fldSimple>` shorthand some other document-generation tools emit for the same field type. If a real client template ever used that shape, the exact silent-unfilled-PDF hazard this ticket exists to close could resurface for that one document. No fixture in the test suite constructs this shape. Accepted for now on the same basis as the PDF→DOCX exclusion above: out of scope until it's shown to matter for a real template this app actually receives.
 
 ## Implementation
-_(pending)_
+
+Followed the plan's steps in order; no deviations from the design above.
+
+**Backend:**
+- `backend/tests/conftest.py`: added `make_valid_docx_bytes(field_names)` — a genuinely complete, LibreOffice-openable OOXML package (`[Content_Types].xml`, `_rels/.rels`, `word/document.xml`), distinct from the pre-existing `make_docx_bytes` (which only writes `word/document.xml` and is fine for this app's own zipfile-based parsing but not for real Word-processing software).
+- `backend/services/word_processor.py`: added `flatten_merge_fields(doc_bytes) -> bytes`, applied only on the PDF-conversion path. Strips the four structural MERGEFIELD run types (`fldChar begin`, `instrText`, `fldChar separate`, `fldChar end`) via regex over `word/document.xml`, leaving the cached display text in place; every other zip part passes through byte-identical. `fill_word_template`'s own output and the Word download path are untouched.
+- `backend/services/format_converter.py` (new): `is_conversion_available()`, `convert_many_to_pdf(docs, source_ext) -> list[Optional[bytes]]` (batch primitive, one `soffice` invocation per call, per-file retry for any missing output), `convert_to_pdf(doc_bytes, source_ext) -> bytes` (thin wrapper), `ConversionError`/`ConversionUnavailableError`. Pure sync bytes-in/bytes-out, no FastAPI/asyncio — a later swap to a Gotenberg sidecar is a one-file change. Runs `soffice --headless -env:UserInstallation=file://<unique-profile-dir> --convert-to pdf:writer_pdf_Export --outdir <tmp> <inputs...>` inside a `tempfile.TemporaryDirectory()`.
+- `backend/main.py`: `OutputFormat = Optional[Literal["original", "pdf", "docx"]]`; added to both `GenerateRequest` and `GenerateAllRequest`. `/api/generate` resolves format via a new `_apply_output_format` helper and returns the correct extension/MIME type through the existing `build_filenames` naming path. `/api/generate-all` fails fast with 503 (via `is_conversion_available()`) *before* filling any row when PDF is requested and the converter is unavailable; otherwise fills all rows first, then makes one batched `convert_many_to_pdf` call (under a module-level `asyncio.Semaphore(1)`, off the event loop via `run_in_threadpool`) over the successfully-filled rows, mapping any `None` result back to that row's `status: "error"` while leaving the others `ok` — preserving TICKET-003's partial-success contract through conversion. A PDF-templated document requesting `docx` returns 400. `/api/upload` now returns `template_type` (`"word"`/`"pdf"`); `/api/health` now returns `{"status": "ok", "pdf_conversion": <bool>}`.
+- Railway: `RAILPACK_DEPLOY_APT_PACKAGES=libreoffice-writer fonts-liberation` set as a service variable on the backend service (this service builds with Railpack, not Nixpacks — `backend/nixpacks.toml` is dead config, left in place but unused). Verified via a full Railway build log grep showing successful installation, independent of this ticket's code changes.
+
+**Frontend (`frontend/src/app/page.tsx`):**
+- New state: `templateType` (`"pdf"`/`"word"`, set from the upload response) and `outputFormat` (`"original"`/`"pdf"`, default `"original"`), both reset in `handleReset`.
+- The setup modal's format line is now conditional: a static "same as your template" line for PDF templates (unchanged from TICKET-003), and a real `<select>` (reusing `.mapping-select`, no new CSS) for Word templates with `original` and `pdf` options.
+- The modal's live filename preview and the Review step's "Naming documents by:" line both reflect the currently-chosen format and update immediately on selection.
+- `output_format: outputFormat` added to both `handleGenerate`'s and `handleGenerateAll`'s POST bodies.
 
 ## Tests
-_(pending)_
+
+**Backend** (`cd backend && python -m pytest -q`): **100 passed**. Includes:
+- `test_word_processor.py`: `flatten_merge_fields` correctness (filled value survives, no `MERGEFIELD`/`fldChar`/`instrText` remain, other zip parts untouched, no-op on a doc with no merge fields).
+- `test_format_converter.py` (12 tests): command shape/flags, unique profile dir per call, one invocation per batch, missing-output retried individually (not the whole batch), retry-also-fails leaves only that slot `None`, missing-`soffice` → `ConversionUnavailableError`, non-zero-exit-with-no-outputs → `ConversionError`, temp-dir cleanup on success and on crash — **plus two real, unmocked end-to-end conversion tests** (`skipif` guarded, confirmed **PASSED not skipped** with LibreOffice 26.2.5.2 installed) that fill a real DOCX, flatten it, convert it, and assert the extracted PDF text contains the real value and neither `«Name»` nor `MERGEFIELD`.
+- `test_main.py`: full behavior matrix for both `/api/generate` and `/api/generate-all` — format resolution, 422/400/503/500 error mapping with no Word content ever returned on an error path, event-loop-offloading assertion (conversion runs off the main thread), fail-fast-before-any-row-filled on `/api/generate-all` when the converter is unavailable, `filename_column` + PDF format naming, `template_type` on upload, boolean `pdf_conversion` on `/api/health`.
+
+**Frontend** (`cd frontend && npm run test`): **24 passed** (16 from TICKET-003 + 8 new). Confirmed red state first (7 of 8 failed for the right reasons — missing format select, missing `output_format` in request bodies, stale filename extension; the 8th passed trivially since the pre-implementation UI had no select at all). New cases: Word template shows a Format select defaulting to `original`; PDF template shows no select; selecting PDF updates the live filename preview's extension; the Review step reflects the chosen format; both `Generate Document` and `Generate All Rows` send the chosen `output_format`; the default sends `"original"`; `Start Over` resets the choice on re-upload. Also `npx tsc --noEmit` clean and `npm run build` succeeds.
+
+**Real, non-mocked, end-to-end verification** (backend dev server + synthetic 3-row Excel + synthetic Word template, never real client data): uploaded, confirmed `template_type: "word"`; called `/api/generate-all` with `output_format: "pdf"` — all 3 rows converted successfully; extracted each returned PDF's text with pymupdf and confirmed each shows its own row's real values (`Alice Anderson`/`2026-01-01`, etc.) with no `MERGEFIELD`/`«` leakage; also confirmed `/api/generate` (single row) with `output_format: "pdf"` returns a correctly-named, correctly-filled PDF. This is the step-16 manual pass, done via direct API calls rather than the browser UI since the UI behavior was already covered by the RTL suite above and the thing genuinely at risk — silent unfilled-PDF output — is a backend correctness question, not a UI one.
 
 ## Impact
-_(pending)_
+
+- New runtime dependency on the backend container: LibreOffice (`libreoffice-writer` + `fonts-liberation`, ~0.5–1 GB image growth), installed via a Railway service variable rather than a repo file — see the Railpack correction above.
+- `/api/upload` and `/api/health` response shapes changed additively (`template_type`, `pdf_conversion`) — no breaking change for existing callers.
+- `output_format` is optional and additive on both generate endpoints; omitting it preserves today's exact behavior and bytes on the Word download path.
+- No change to session storage, retention, or the data sent to third-party LLMs — conversion happens entirely inside the existing Railway container.
+
+## QA review (qa-reviewer, independent pass)
+Dispatched against the diff before deploy — read every changed file end-to-end, re-ran both suites independently (didn't take the claimed counts on faith), and reasoned through the edge cases specific to this ticket's own stated risk (silent unfilled PDFs, bulk failure isolation). Confirmed the core correctness hazard mitigation (flatten-only-on-PDF-path) and the partial-success/fail-fast/off-event-loop claims all genuinely hold under test, not just asserted against mocks. Found 2 real bugs, both fixed:
+
+1. **Skip in the setup modal permanently hid the "Change" control — and with it the entire new Format selector — for the rest of the session.** `handleSkipSetup` clears `filenameColumn` to `""`, and the Review step's "Naming documents by: … · Format: … [Change]" block (the only other place that reopens the setup modal) was gated behind `filenameColumn` being truthy — a gating pattern inherited from TICKET-003 that this ticket unknowingly built the new Format control on top of. A user who clicked Skip on a Word template could never reach the PDF option afterward without re-uploading from scratch. Fixed by making that row unconditional in the Review step (showing "row number (default)" in place of a column name when skipped) — reproduced first with a failing RTL test (`Skip still leaves Change reachable so the Format selector can be reopened`), now passing.
+2. **A hung/pathological LibreOffice conversion during a batch could destroy an entire otherwise-successful bulk run.** `subprocess.run(..., timeout=timeout)` in `format_converter._run_batch` had no `try/except` around it — a `subprocess.TimeoutExpired` on one document propagated raw out of `convert_many_to_pdf`, aborting the whole `/api/generate-all` request and losing every row that had already filled and converted successfully. This was exactly the "one bad document takes the batch down with it" failure the ticket's own design calls out as the reason for per-file retry — but that retry only covered soffice exiting cleanly with a missing output, not a hang. Fixed: `_run_batch` now catches `TimeoutExpired` and treats it as "no outputs produced," routing into the existing per-file retry path (a hung document falls back to an individual retry; if that also times out, only that one row ends up `status: "error"` while its siblings still succeed). Reproduced first with two failing tests (batch-timeout-recovers-via-retry, individual-retry-timeout-leaves-only-that-slot-none) in `test_format_converter.py`, now passing.
+
+Also fixed, minor: the ticket's own design specified conversion-aware spinner copy ("Filling your template and converting to PDF...", "Generating and converting N documents to PDF…") when PDF format is chosen; the initial implementation left both status bars unconditional. Implemented via TDD (two new RTL tests) to match the ticket's own design section 4, since the Implementation section had claimed "no deviations" and this was one.
+
+One minor test-coverage gap also closed: the bogus-format→422 case was tested on `/api/generate` but not `/api/generate-all` (both share the same `Literal` type so this wasn't a live bug, just an unverified assertion) — added `test_generate_all_bogus_output_format_returns_422`.
+
+Re-verified after fixes: 103/103 backend (14/14 in `test_format_converter.py`, including both real unmocked LibreOffice conversion tests confirmed PASSED not skipped), 27/27 frontend, `tsc --noEmit`/`npm run build`/`npm run test:tokens` all clean.

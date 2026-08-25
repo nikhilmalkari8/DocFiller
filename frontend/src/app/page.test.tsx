@@ -311,3 +311,241 @@ describe("bulk generate all rows", () => {
     expect(screen.getByRole("table")).toBeDefined(); // still the mapping table, not results
   });
 });
+
+describe("output format choice", () => {
+  test("Word template: the modal shows a Format select with a PDF option, defaulting to Word", async () => {
+    await renderAndUpload({ templateType: "word" });
+    const selects = screen.getAllByRole("combobox") as HTMLSelectElement[];
+    const formatSelect = selects.find((s) =>
+      Array.from(s.options).some((o) => o.value === "pdf")
+    );
+    expect(formatSelect).toBeDefined();
+    expect(formatSelect!.value).toBe("original");
+  });
+
+  test("PDF template: no Format select renders, just the static line", async () => {
+    await renderAndUpload({ templateType: "pdf" });
+    const selects = screen.getAllByRole("combobox") as HTMLSelectElement[];
+    const formatSelect = selects.find((s) =>
+      Array.from(s.options).some((o) => o.value === "pdf")
+    );
+    expect(formatSelect).toBeUndefined();
+    expect(screen.getByText(/same as your template/i)).toBeDefined();
+  });
+
+  test("selecting PDF updates the filename preview's extension", async () => {
+    await renderAndUpload({ templateType: "word" });
+    expect(screen.getByText(/John_Doe\.docm/i)).toBeDefined();
+
+    const selects = screen.getAllByRole("combobox") as HTMLSelectElement[];
+    const formatSelect = selects.find((s) =>
+      Array.from(s.options).some((o) => o.value === "pdf")
+    )!;
+    fireEvent.change(formatSelect, { target: { value: "pdf" } });
+
+    expect(screen.getByText(/John_Doe\.pdf/i)).toBeDefined();
+  });
+
+  test("after Continue, the Review step shows the chosen format next to the naming column", async () => {
+    await renderAndUpload({ templateType: "word" });
+    const selects = screen.getAllByRole("combobox") as HTMLSelectElement[];
+    const formatSelect = selects.find((s) =>
+      Array.from(s.options).some((o) => o.value === "pdf")
+    )!;
+    fireEvent.change(formatSelect, { target: { value: "pdf" } });
+    fireEvent.click(screen.getByRole("button", { name: /Continue/i }));
+
+    const namingLine = screen.getByText(/Naming documents by:/i);
+    expect(namingLine.closest(".row-selector")?.textContent).toMatch(/PDF/);
+  });
+
+  test("Generate Document sends output_format: pdf when PDF is chosen", async () => {
+    const { fetchMock } = await renderAndUpload({ templateType: "word" });
+    const selects = screen.getAllByRole("combobox") as HTMLSelectElement[];
+    const formatSelect = selects.find((s) =>
+      Array.from(s.options).some((o) => o.value === "pdf")
+    )!;
+    fireEvent.change(formatSelect, { target: { value: "pdf" } });
+    fireEvent.click(screen.getByRole("button", { name: /Continue/i }));
+
+    fetchMock.mockImplementationOnce(
+      async () =>
+        ({
+          ok: true,
+          status: 200,
+          blob: async () => new Blob(["pdf-bytes"]),
+          headers: { get: () => 'attachment; filename="filled_document.pdf"' },
+        }) as unknown as Response
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^✨ Generate Document$/ }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    const body = JSON.parse((fetchMock.mock.calls[2][1] as RequestInit).body as string);
+    expect(body.output_format).toBe("pdf");
+  });
+
+  test("Generate All Rows sends output_format: pdf when PDF is chosen", async () => {
+    const { fetchMock } = await renderAndUpload({ templateType: "word" });
+    const selects = screen.getAllByRole("combobox") as HTMLSelectElement[];
+    const formatSelect = selects.find((s) =>
+      Array.from(s.options).some((o) => o.value === "pdf")
+    )!;
+    fireEvent.change(formatSelect, { target: { value: "pdf" } });
+    fireEvent.click(screen.getByRole("button", { name: /Continue/i }));
+
+    fetchMock.mockImplementationOnce(async () =>
+      jsonResponse({
+        total_rows: 1,
+        success_count: 1,
+        error_count: 0,
+        skipped_count: 0,
+        results: [
+          {
+            row_index: 0,
+            status: "ok",
+            label: "John Doe",
+            filename: "John_Doe.pdf",
+            mime_type: "application/pdf",
+            content_base64: "JVBERi0=",
+            error: null,
+          },
+        ],
+      })
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Generate All Rows/i }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    const body = JSON.parse((fetchMock.mock.calls[2][1] as RequestInit).body as string);
+    expect(body.output_format).toBe("pdf");
+  });
+
+  test("leaving the default and generating sends output_format: original", async () => {
+    const { fetchMock } = await renderAndUpload({ templateType: "word" });
+    fireEvent.click(screen.getByRole("button", { name: /Continue/i }));
+
+    fetchMock.mockImplementationOnce(
+      async () =>
+        ({
+          ok: true,
+          status: 200,
+          blob: async () => new Blob(["docx-bytes"]),
+          headers: { get: () => 'attachment; filename="filled_document.docx"' },
+        }) as unknown as Response
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^✨ Generate Document$/ }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    const body = JSON.parse((fetchMock.mock.calls[2][1] as RequestInit).body as string);
+    expect(body.output_format).toBe("original");
+  });
+
+  test("Skip still leaves Change reachable so the Format selector can be reopened", async () => {
+    await renderAndUpload({ templateType: "word" });
+    fireEvent.click(screen.getByRole("button", { name: /Skip/i }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /Change/i }));
+    expect(screen.getByRole("dialog")).toBeDefined();
+    const selects = screen.getAllByRole("combobox") as HTMLSelectElement[];
+    const formatSelect = selects.find((s) =>
+      Array.from(s.options).some((o) => o.value === "pdf")
+    );
+    expect(formatSelect).toBeDefined();
+  });
+
+  test("spinner copy mentions PDF conversion when generating a single document as PDF", async () => {
+    const { fetchMock } = await renderAndUpload({ templateType: "word" });
+    const selects = screen.getAllByRole("combobox") as HTMLSelectElement[];
+    const formatSelect = selects.find((s) =>
+      Array.from(s.options).some((o) => o.value === "pdf")
+    )!;
+    fireEvent.change(formatSelect, { target: { value: "pdf" } });
+    fireEvent.click(screen.getByRole("button", { name: /Continue/i }));
+
+    let resolveFetch: (value: Response) => void = () => {};
+    fetchMock.mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolveFetch = resolve;
+        })
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^✨ Generate Document$/ }));
+
+    expect(screen.getByText(/converting to pdf/i)).toBeDefined();
+
+    resolveFetch({
+      ok: true,
+      status: 200,
+      blob: async () => new Blob(["pdf-bytes"]),
+      headers: { get: () => null },
+    } as unknown as Response);
+    await waitFor(() => expect(screen.getByText(/Document Ready/i)).toBeDefined());
+  });
+
+  test("spinner copy mentions PDF conversion when generating all rows as PDF", async () => {
+    const { fetchMock } = await renderAndUpload({ templateType: "word" });
+    const selects = screen.getAllByRole("combobox") as HTMLSelectElement[];
+    const formatSelect = selects.find((s) =>
+      Array.from(s.options).some((o) => o.value === "pdf")
+    )!;
+    fireEvent.change(formatSelect, { target: { value: "pdf" } });
+    fireEvent.click(screen.getByRole("button", { name: /Continue/i }));
+
+    let resolveFetch: (value: Response) => void = () => {};
+    fetchMock.mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolveFetch = resolve;
+        })
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Generate All Rows/i }));
+
+    expect(screen.getByText(/converting.*pdf/i)).toBeDefined();
+
+    resolveFetch(
+      jsonResponse({
+        total_rows: 1,
+        success_count: 1,
+        error_count: 0,
+        skipped_count: 0,
+        results: [],
+      })
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+  });
+
+  test("Start Over resets the format choice back to default", async () => {
+    const { fetchMock } = await renderAndUpload({ templateType: "word" });
+    const selects = screen.getAllByRole("combobox") as HTMLSelectElement[];
+    const formatSelect = selects.find((s) =>
+      Array.from(s.options).some((o) => o.value === "pdf")
+    )!;
+    fireEvent.change(formatSelect, { target: { value: "pdf" } });
+    fireEvent.click(screen.getByRole("button", { name: /Continue/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Start Over/i }));
+
+    // Re-upload within the same render (not a second renderAndUpload call,
+    // which would double-render on top of the existing instance).
+    fetchMock.mockImplementationOnce(async () =>
+      jsonResponse({ ...UPLOAD_RESPONSE, template_type: "word" })
+    );
+    fetchMock.mockImplementationOnce(async () => jsonResponse(MAP_RESPONSE));
+
+    const excelInput = document.querySelector(
+      'input[accept=".xlsx,.xls,.xlsm"]'
+    ) as HTMLInputElement;
+    const templateInput = document.querySelector(
+      'input[accept=".pdf,.docx,.docm"]'
+    ) as HTMLInputElement;
+    uploadFile(excelInput, new File(["excel"], "data.xlsx"));
+    uploadFile(templateInput, new File(["template"], "template.docm"));
+    fireEvent.click(screen.getByRole("button", { name: /Upload & Analyze/i }));
+
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeDefined());
+    const freshSelects = screen.getAllByRole("combobox") as HTMLSelectElement[];
+    const freshFormatSelect = freshSelects.find((s) =>
+      Array.from(s.options).some((o) => o.value === "pdf")
+    )!;
+    expect(freshFormatSelect.value).toBe("original");
+  });
+});

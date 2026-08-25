@@ -3,6 +3,18 @@ import io
 import re
 import zipfile
 
+# One <w:r>...</w:r> run element containing a specific structural marker —
+# used to strip the four structural runs of a MERGEFIELD field code
+# (begin/instrText/separate/end) while leaving the result run (the run
+# containing the actual filled text) untouched. Each pattern is scoped to a
+# single run via a non-greedy body that stops at the first </w:r>.
+_STRUCTURAL_RUN_PATTERNS = [
+    re.compile(r'<w:r\b[^>]*>(?:(?!</w:r>).)*?<w:fldChar\s+w:fldCharType="begin"\s*/>(?:(?!</w:r>).)*?</w:r>', re.DOTALL),
+    re.compile(r"<w:r\b[^>]*>(?:(?!</w:r>).)*?<w:instrText\b(?:(?!</w:r>).)*?</w:r>", re.DOTALL),
+    re.compile(r'<w:r\b[^>]*>(?:(?!</w:r>).)*?<w:fldChar\s+w:fldCharType="separate"\s*/>(?:(?!</w:r>).)*?</w:r>', re.DOTALL),
+    re.compile(r'<w:r\b[^>]*>(?:(?!</w:r>).)*?<w:fldChar\s+w:fldCharType="end"\s*/>(?:(?!</w:r>).)*?</w:r>', re.DOTALL),
+]
+
 
 def extract_merge_fields(doc_bytes: bytes) -> list[str]:
     """
@@ -35,6 +47,38 @@ def fill_word_template(doc_bytes: bytes, fill_values: dict[str, str]) -> bytes:
     for field_name, value in fill_values.items():
         safe_value = str(value) if value is not None else ""
         doc_xml = doc_xml.replace(f"\u00ab{field_name}\u00bb", safe_value)
+
+    file_map["word/document.xml"] = doc_xml.encode("utf-8")
+
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as z_out:
+        for name, data in file_map.items():
+            z_out.writestr(name, data)
+
+    return output.getvalue()
+
+
+def flatten_merge_fields(doc_bytes: bytes) -> bytes:
+    """
+    Strip MERGEFIELD field-code structure (fldChar begin/separate/end,
+    instrText), leaving only the literal filled text behind.
+
+    fill_word_template only replaces the *display* text inside each field —
+    Word renders the cached result, so the underlying field code is still
+    intact and a MERGEFIELD-aware consumer (LibreOffice included) may
+    re-render the field from its instruction instead of the cached display
+    text, which would silently produce an unfilled document. This must run
+    only on the conversion path, never on the Word download path, since it
+    changes the document's XML structure (the DOCX download must keep
+    today's exact bytes and behavior).
+    """
+    with zipfile.ZipFile(io.BytesIO(doc_bytes)) as z_in:
+        file_map = {name: z_in.read(name) for name in z_in.namelist()}
+
+    doc_xml = file_map["word/document.xml"].decode("utf-8")
+
+    for pattern in _STRUCTURAL_RUN_PATTERNS:
+        doc_xml = pattern.sub("", doc_xml)
 
     file_map["word/document.xml"] = doc_xml.encode("utf-8")
 

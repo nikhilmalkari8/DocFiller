@@ -13,7 +13,10 @@ interface UploadResponse {
   excel_preview: Record<string, string>[];
   total_rows: number;
   placeholders: string[];
+  template_type: "pdf" | "word";
 }
+
+type OutputFormat = "original" | "pdf";
 
 interface BulkResult {
   row_index: number;
@@ -68,9 +71,17 @@ export default function Home() {
   // Setup modal / bulk generation state
   const [showSetupModal, setShowSetupModal] = useState(false);
   const [filenameColumn, setFilenameColumn] = useState("");
+  const [templateType, setTemplateType] = useState<"pdf" | "word">("pdf");
+  const [outputFormat, setOutputFormat] = useState<OutputFormat>("original");
   const [bulkResults, setBulkResults] = useState<BulkResult[] | null>(null);
   const [bulkGenerating, setBulkGenerating] = useState(false);
   const modalSelectRef = useRef<HTMLSelectElement>(null);
+
+  // The template's own extension (e.g. ".docm") — what "original" format downloads as.
+  const templateExt = templateFile
+    ? `.${templateFile.name.split(".").pop() || "pdf"}`
+    : ".pdf";
+  const currentExt = outputFormat === "pdf" ? ".pdf" : templateExt;
 
   // ───── Drag and Drop ─────
   const [dragOver, setDragOver] = useState<"excel" | "template" | null>(null);
@@ -138,6 +149,8 @@ export default function Home() {
       setTotalRows(data.total_rows);
       setPlaceholders(data.placeholders);
       setFilenameColumn(data.excel_columns[0] || "");
+      setTemplateType(data.template_type);
+      setOutputFormat("original");
 
       // Auto-map using LLM
       await autoMap(data);
@@ -218,6 +231,7 @@ export default function Home() {
           mapping,
           row_index: rowIndex,
           filename_column: filenameColumn || undefined,
+          output_format: outputFormat,
         }),
       });
 
@@ -265,6 +279,7 @@ export default function Home() {
           session_id: sessionId,
           mapping,
           filename_column: filenameColumn || undefined,
+          output_format: outputFormat,
         }),
       });
 
@@ -335,6 +350,8 @@ export default function Home() {
     setError(null);
     setShowSetupModal(false);
     setFilenameColumn("");
+    setTemplateType("pdf");
+    setOutputFormat("original");
     setBulkResults(null);
   };
 
@@ -425,10 +442,25 @@ export default function Home() {
               </select>
             </div>
             <p className="preview-value">
-              e.g. &quot;{previewFilename(excelPreview, filenameColumn, ".pdf")}&quot;
+              e.g. &quot;{previewFilename(excelPreview, filenameColumn, currentExt)}&quot;
             </p>
 
-            <p className="preview-value">Format: PDF — same as your template</p>
+            {templateType === "word" ? (
+              <div className="row-selector">
+                <label htmlFor="format-select">Format:</label>
+                <select
+                  id="format-select"
+                  className="mapping-select"
+                  value={outputFormat}
+                  onChange={(e) => setOutputFormat(e.target.value as OutputFormat)}
+                >
+                  <option value="original">Word ({templateExt}) — same as your template</option>
+                  <option value="pdf">PDF</option>
+                </select>
+              </div>
+            ) : (
+              <p className="preview-value">Format: PDF — same as your template</p>
+            )}
 
             <div className="actions actions-center">
               <button className="btn btn-primary" onClick={closeSetupModal}>
@@ -558,19 +590,27 @@ export default function Home() {
             <span>of {totalRows} rows (0-indexed)</span>
           </div>
 
-          {filenameColumn && (
-            <div className="row-selector">
-              <span>
-                Naming documents by: <strong>{filenameColumn}</strong>
-              </span>
-              <button
-                className="btn btn-secondary"
-                onClick={() => setShowSetupModal(true)}
-              >
-                Change
-              </button>
-            </div>
-          )}
+          <div className="row-selector">
+            <span>
+              Naming documents by:{" "}
+              <strong>{filenameColumn || "row number (default)"}</strong>
+              {templateType === "word" && (
+                <>
+                  {" "}
+                  · Format:{" "}
+                  <strong>
+                    {outputFormat === "pdf" ? "PDF" : `Word (${templateExt})`}
+                  </strong>
+                </>
+              )}
+            </span>
+            <button
+              className="btn btn-secondary"
+              onClick={() => setShowSetupModal(true)}
+            >
+              Change
+            </button>
+          </div>
 
           <table className="mapping-table">
             <thead>
@@ -655,7 +695,9 @@ export default function Home() {
             <div className="status-bar">
               <div className="spinner" />
               <span className="status-text">
-                Filling your template with data...
+                {outputFormat === "pdf"
+                  ? "Filling your template and converting to PDF..."
+                  : "Filling your template with data..."}
               </span>
             </div>
           )}
@@ -664,7 +706,9 @@ export default function Home() {
             <div className="status-bar">
               <div className="spinner" />
               <span className="status-text">
-                Generating {totalRows} documents…
+                {outputFormat === "pdf"
+                  ? `Generating and converting ${totalRows} documents to PDF…`
+                  : `Generating ${totalRows} documents…`}
               </span>
             </div>
           )}

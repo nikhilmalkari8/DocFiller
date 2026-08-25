@@ -1,9 +1,14 @@
 # Testing
 
 ## Current state
-Backend: full test suite exists (46 tests, `backend/tests/`), covering all four service modules plus all three API routes — see `docs/tickets/ready-for-deploy/001-backend-test-suite.md` (moves to `completed/` once deployed) for what it covers and why. This was a one-time retroactive pass to establish a baseline; every ticket from here on follows strict TDD (failing test before implementation), regardless of task size, per standing preference in the global `CLAUDE.md`.
+Backend: full test suite exists (103 tests, `backend/tests/`), covering all service modules plus all API routes — see `docs/tickets/ready-for-deploy/001-backend-test-suite.md` (moves to `completed/` once deployed) for the original baseline and why. Every ticket from here on follows strict TDD (failing test before implementation), regardless of task size, per standing preference in the global `CLAUDE.md`.
 
-Frontend: a real single-page UI exists (`frontend/src/app/page.tsx`, `globals.css`). Vitest + RTL landed with TICKET-003 (bulk "generate all rows" + setup modal), the first ticket that changed real component behavior. See "Frontend — Vitest + React Testing Library" below for conventions, and "Frontend — interim token harness" for the earlier CSS-only exception (TICKET-002).
+Frontend: a real single-page UI exists (`frontend/src/app/page.tsx`, `globals.css`). Vitest + RTL landed with TICKET-003 (bulk "generate all rows" + setup modal), the first ticket that changed real component behavior; TICKET-004 (PDF/Word format choice) added to the same file. 27 tests total in `frontend/src/app/page.test.tsx`. See "Frontend — Vitest + React Testing Library" below for conventions, and "Frontend — interim token harness" for the earlier CSS-only exception (TICKET-002).
+
+## Backend — real (non-mocked) LibreOffice conversion tests
+`backend/tests/test_format_converter.py` (TICKET-004) has two tests that do **not** mock `subprocess` — they run the real `soffice` binary end-to-end: fill a synthetic DOCX, flatten its merge fields, convert to PDF via `convert_to_pdf`, then extract the PDF's text with `pymupdf` and assert the real filled value is present and neither `«Name»` nor `MERGEFIELD` leaked through. This is the one test in the suite that would actually catch a regression to unfilled/raw-placeholder PDFs — the mocked command-shape/retry/cleanup tests around it would happily pass even if real conversion produced garbage.
+
+Both tests are `@pytest.mark.skipif(shutil.which("soffice") is None, ...)` so the suite stays runnable on a machine without LibreOffice. **On this dev machine LibreOffice is installed** (confirmed `soffice --version` → `26.2.5.2`), so these two tests must run for real and report **PASSED, not SKIPPED** — check with `pytest tests/test_format_converter.py -q -rs` if in doubt. A SKIPPED result here on this machine means something is wrong with the test setup, not that the environment lacks the dependency.
 
 ## Backend — pytest
 `pytest` and `httpx` (for FastAPI's `TestClient`) are in `backend/requirements.txt`.

@@ -14,7 +14,7 @@ Frontend and backend are being developed together, no strict ordering — work h
 
 ## In progress
 - TICKET-003 (bulk "generate all rows" + setup modal + naming column) — implemented, QA-reviewed (found and fixed 3 real bugs, most severe a filename-collision data-loss bug in Download All), all tests passing. In `docs/tickets/ready-for-deploy/`, not yet deployed.
-- TICKET-004 (PDF/Word format choice in the setup modal) — planned, next up. Depends on TICKET-003 (edits its modal and `/api/generate-all`).
+- TICKET-004 (PDF/Word format choice in the setup modal, via headless LibreOffice conversion) — implemented, QA-reviewed (found and fixed 2 real bugs: Skip permanently hiding the new Format selector, and an unhandled LibreOffice subprocess timeout able to crash an entire bulk batch), 103/103 backend + 27/27 frontend tests passing, real unmocked end-to-end PDF conversion verified with synthetic data. In `docs/tickets/ready-for-deploy/`, not yet deployed. `RAILPACK_DEPLOY_APT_PACKAGES` already set on the Railway backend service and confirmed installing LibreOffice successfully in a real build.
 
 ## Planned
 _(nothing else queued — see docs/tickets/pending/ for what's active)_

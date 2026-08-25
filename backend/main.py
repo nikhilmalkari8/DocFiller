@@ -1,8 +1,9 @@
 """DocFiller – Intelligent Document Filler API."""
+import asyncio
 import base64
 import os
 import uuid
-from typing import Optional
+from typing import Literal, Optional
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -11,16 +12,33 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from services.excel_parser import parse_excel, get_row_data, get_all_rows
 from services.filenames import build_filenames
+from services.format_converter import (
+    ConversionError,
+    ConversionUnavailableError,
+    convert_many_to_pdf,
+    convert_to_pdf,
+    is_conversion_available,
+)
 from services.pdf_processor import extract_placeholders, fill_pdf
-from services.word_processor import extract_merge_fields, fill_word_template
+from services.word_processor import extract_merge_fields, fill_word_template, flatten_merge_fields
 from services.llm_mapper import map_fields
 
 app = FastAPI(title="DocFiller API", version="1.0.0")
 
 MAX_BULK_ROWS = 200
+
+OutputFormat = Optional[Literal["original", "pdf", "docx"]]
+
+# Serializes all LibreOffice conversions process-wide. There's no auth on
+# this API and no per-request concurrency limit elsewhere, so without this a
+# few overlapping PDF-conversion requests could run several ~150-300MB
+# soffice processes at once on a small container. Costs nothing at this
+# project's real traffic (conversions queue instead of running in parallel).
+_conversion_semaphore = asyncio.Semaphore(1)
 
 # CORS for Next.js frontend
 app.add_middleware(
@@ -52,17 +70,19 @@ class GenerateRequest(BaseModel):
     mapping: dict[str, str]
     row_index: Optional[int] = 0
     filename_column: Optional[str] = None
+    output_format: OutputFormat = None
 
 
 class GenerateAllRequest(BaseModel):
     session_id: str
     mapping: dict[str, str]
+    output_format: OutputFormat = None
     filename_column: Optional[str] = None
 
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok"}
+    return {"status": "ok", "pdf_conversion": is_conversion_available()}
 
 
 @app.post("/api/upload")
@@ -134,6 +154,7 @@ async def upload_files(
         "excel_preview": excel_data["preview"],
         "total_rows": excel_data["total_rows"],
         "placeholders": placeholders,
+        "template_type": "word" if is_word else "pdf",
     }
 
 
@@ -186,6 +207,41 @@ def _fill_document(session: dict, fill_values: dict[str, str]) -> tuple[bytes, s
         return filled_doc, "application/pdf", ".pdf"
 
 
+async def _apply_output_format(
+    session: dict, filled_doc: bytes, mime_type: str, template_ext: str, output_format: OutputFormat
+) -> tuple[bytes, str, str]:
+    """
+    Resolve the requested output_format against the template's actual type,
+    converting Word -> PDF if asked. PDF templates never convert (PDF->Word
+    is out of scope by decision — too lossy for real client documents).
+    Returns (bytes, mime_type, ext), raising HTTPException for anything that
+    can't be satisfied.
+    """
+    template_type = session.get("template_type", "pdf")
+    requested = output_format or "original"
+
+    if template_type == "pdf":
+        if requested == "docx":
+            raise HTTPException(400, "Converting a PDF template to Word isn't supported.")
+        return filled_doc, mime_type, template_ext
+
+    # template_type == "word"
+    if requested in ("original", "docx"):
+        return filled_doc, mime_type, template_ext
+
+    # requested == "pdf"
+    flattened = flatten_merge_fields(filled_doc)
+    try:
+        async with _conversion_semaphore:
+            pdf_bytes = await run_in_threadpool(convert_to_pdf, flattened, template_ext)
+    except ConversionUnavailableError:
+        raise HTTPException(503, "PDF conversion is unavailable on this server")
+    except ConversionError as e:
+        raise HTTPException(500, f"Failed to convert document to PDF: {str(e)}")
+
+    return pdf_bytes, "application/pdf", ".pdf"
+
+
 @app.post("/api/generate")
 async def generate_document(request: GenerateRequest):
     """
@@ -207,6 +263,10 @@ async def generate_document(request: GenerateRequest):
         filled_doc, mime_type, template_ext = _fill_document(session, fill_values)
     except Exception as e:
         raise HTTPException(500, f"Failed to generate document: {str(e)}")
+
+    filled_doc, mime_type, template_ext = await _apply_output_format(
+        session, filled_doc, mime_type, template_ext, request.output_format
+    )
 
     if request.filename_column:
         filename = build_filenames([row_data], request.filename_column, template_ext)[0]
@@ -232,6 +292,19 @@ async def generate_all_documents(request: GenerateAllRequest):
     if not session:
         raise HTTPException(404, "Session not found. Please re-upload files.")
 
+    template_type = session.get("template_type", "pdf")
+    template_ext = session.get("template_ext", ".pdf")
+    requested_format = request.output_format or "original"
+    converting_to_pdf = template_type == "word" and requested_format == "pdf"
+
+    if template_type == "pdf" and requested_format == "docx":
+        raise HTTPException(400, "Converting a PDF template to Word isn't supported.")
+
+    # Fail fast, before filling a single row, if conversion was requested but
+    # isn't available — cheaper than filling N rows only to discover that.
+    if converting_to_pdf and not is_conversion_available():
+        raise HTTPException(503, "PDF conversion is unavailable on this server")
+
     try:
         rows = get_all_rows(session["excel_bytes"])
     except Exception as e:
@@ -243,9 +316,9 @@ async def generate_all_documents(request: GenerateAllRequest):
             f"Too many rows ({len(rows)}). Bulk generation is limited to {MAX_BULK_ROWS} rows per request.",
         )
 
-    template_ext = session.get("template_ext", ".pdf")
+    output_ext = ".pdf" if converting_to_pdf else template_ext
     try:
-        filenames = build_filenames(rows, request.filename_column, template_ext)
+        filenames = build_filenames(rows, request.filename_column, output_ext)
     except Exception as e:
         raise HTTPException(400, f"Failed to derive document filenames: {str(e)}")
 
@@ -284,6 +357,7 @@ async def generate_all_documents(request: GenerateAllRequest):
                     "mime_type": mime_type,
                     "content_base64": base64.b64encode(filled_doc).decode(),
                     "error": None,
+                    "_raw_bytes": filled_doc,  # dropped before the response is returned
                 }
             )
             success_count += 1
@@ -300,6 +374,36 @@ async def generate_all_documents(request: GenerateAllRequest):
                     "error": f"Failed to fill template: {str(e)}",
                 }
             )
+
+    if converting_to_pdf:
+        ok_indices = [i for i, r in enumerate(results) if r["status"] == "ok"]
+        if ok_indices:
+            flattened_docs = [flatten_merge_fields(results[i]["_raw_bytes"]) for i in ok_indices]
+            try:
+                async with _conversion_semaphore:
+                    pdf_results = await run_in_threadpool(
+                        convert_many_to_pdf, flattened_docs, template_ext
+                    )
+            except ConversionUnavailableError:
+                raise HTTPException(503, "PDF conversion is unavailable on this server")
+            except ConversionError as e:
+                raise HTTPException(500, f"Failed to convert documents to PDF: {str(e)}")
+
+            for idx, pdf_bytes in zip(ok_indices, pdf_results):
+                if pdf_bytes is None:
+                    success_count -= 1
+                    error_count += 1
+                    results[idx]["status"] = "error"
+                    results[idx]["filename"] = None
+                    results[idx]["mime_type"] = None
+                    results[idx]["content_base64"] = None
+                    results[idx]["error"] = "Failed to convert document to PDF"
+                else:
+                    results[idx]["mime_type"] = "application/pdf"
+                    results[idx]["content_base64"] = base64.b64encode(pdf_bytes).decode()
+
+    for r in results:
+        r.pop("_raw_bytes", None)
 
     return {
         "total_rows": len(rows),
