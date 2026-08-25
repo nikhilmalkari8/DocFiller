@@ -1,8 +1,9 @@
 # TICKET-003: Generate documents for all Excel rows, not just one
 
-**Status:** Ready for Deploy
+**Status:** Completed
 **Created:** 2026-08-25
 **Moved to ready-for-deploy:** 2026-08-25
+**Deployed:** 2026-08-25 — pushed via `main`, Railway + Vercel builds succeeded, verified live at https://docfiller-app.vercel.app / https://docfiller-production-afa9.up.railway.app (bundled with TICKET-004 in the same deploy)
 
 ## Request
 Nikhil: "when I give you 3 rows in the source excel, I need 3 different documents, you are considering only 1st row I guess. check on that." Investigated first — this isn't a bug, the app was built single-row-by-design: `/api/generate` always takes exactly one `row_index` (default 0), and the frontend's Row Selector lets the user manually pick one row per generate. There is no existing bulk-generation capability at all.

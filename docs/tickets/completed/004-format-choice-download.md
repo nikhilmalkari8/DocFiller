@@ -1,9 +1,10 @@
 # TICKET-004: Let user choose output format (Word or PDF) in the setup modal
 
-**Status:** Ready for Deploy
+**Status:** Completed
 **Created:** 2026-08-25
 **Revised:** 2026-08-24 (re-planned after TICKET-003 introduced the setup modal; the earlier per-download format selector design is superseded)
 **QA-reviewed:** 2026-08-25 (2 bugs found and fixed — see QA review section below)
+**Deployed:** 2026-08-25 — pushed to `main`, Railway build confirmed `libreoffice-writer`/`fonts-liberation` installed, `GET /api/health` returns `pdf_conversion: true` live. Verified end-to-end against production (not just staged): uploaded a synthetic Word template + Excel via the live backend, called `/api/generate-all` with `output_format: "pdf"`, all 3 rows succeeded in ~1.3s, and each returned PDF's extracted text was confirmed to contain its own row's real values with no `MERGEFIELD`/`«` leakage — using only synthetic data, never a real client document.
 
 ## Request
 Nikhil: "I want the documents to be available as pdf too. User should be able to have an option to download their desired format, pdf or docx or their original one itself."

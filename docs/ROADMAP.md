@@ -11,10 +11,11 @@ Frontend and backend are being developed together, no strict ordering — work h
 - CORS configured for the deployed frontend domain
 - Backend test suite (46 tests, all 4 services + all 3 API routes) — see `docs/tickets/completed/001-backend-test-suite.md`. Last non-TDD ticket; strict TDD applies from here on. Deployed and live.
 - Frontend color palette: muted slate/steel-blue replaces the old indigo/violet/purple theme — see `docs/tickets/completed/002-muted-dark-color-palette.md`. Deployed and live at https://docfiller-app.vercel.app.
+- Bulk "Generate All Rows" + setup modal + naming column — see `docs/tickets/completed/003-bulk-generate-all-rows.md`. QA-reviewed (3 bugs found and fixed, most severe a filename-collision data-loss bug in Download All). Deployed and live.
+- PDF/Word output format choice via headless LibreOffice conversion — see `docs/tickets/completed/004-format-choice-download.md`. QA-reviewed (2 bugs found and fixed: Skip permanently hiding the Format selector, and an unhandled LibreOffice subprocess timeout able to crash an entire bulk batch). Deployed and live — `GET /api/health` confirms `pdf_conversion: true` on production, verified with a real end-to-end PDF generation round trip against the live backend using synthetic data.
 
 ## In progress
-- TICKET-003 (bulk "generate all rows" + setup modal + naming column) — implemented, QA-reviewed (found and fixed 3 real bugs, most severe a filename-collision data-loss bug in Download All), all tests passing. In `docs/tickets/ready-for-deploy/`, not yet deployed.
-- TICKET-004 (PDF/Word format choice in the setup modal, via headless LibreOffice conversion) — implemented, QA-reviewed (found and fixed 2 real bugs: Skip permanently hiding the new Format selector, and an unhandled LibreOffice subprocess timeout able to crash an entire bulk batch), 103/103 backend + 27/27 frontend tests passing, real unmocked end-to-end PDF conversion verified with synthetic data. In `docs/tickets/ready-for-deploy/`, not yet deployed. `RAILPACK_DEPLOY_APT_PACKAGES` already set on the Railway backend service and confirmed installing LibreOffice successfully in a real build.
+_(nothing in flight — see docs/tickets/pending/ for what's active)_
 
 ## Planned
 _(nothing else queued — see docs/tickets/pending/ for what's active)_
