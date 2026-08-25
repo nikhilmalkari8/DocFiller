@@ -58,3 +58,18 @@ def test_all_same_name_sheet_stays_fully_unique():
     rows = [{"Name": "Same"} for _ in range(6)]
     result = build_filenames(rows, "Name", ".pdf")
     assert len(set(result)) == len(result) == 6
+
+
+def test_suffixed_name_colliding_with_another_rows_raw_value_stays_unique():
+    """Regression: a row whose raw value happens to sanitize to the exact
+    string another (colliding) row would be suffixed to must not produce a
+    silent duplicate filename — this caused real data loss in Download All's
+    zip (one document silently overwriting another)."""
+    rows = [
+        {"Name": "Bond"},  # row 1 (n=1) -- collides with row 3 below
+        {"Name": "Other"},  # row 2 (n=2)
+        {"Name": "Bond"},  # row 3 (n=3) -- "Bond" collides, both get _row_{n}
+        {"Name": "Bond_row_3"},  # row 4 (n=4) -- sanitizes to exactly "Bond_row_3"
+    ]
+    result = build_filenames(rows, "Name", ".pdf")
+    assert len(set(result)) == len(result), f"duplicate filenames produced: {result}"

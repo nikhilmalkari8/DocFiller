@@ -260,6 +260,43 @@ describe("bulk generate all rows", () => {
     await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalledTimes(1));
   });
 
+  test("regenerating a single document after a prior bulk run does not show stale bulk results", async () => {
+    const { fetchMock } = await renderAndUpload();
+    fireEvent.click(screen.getByRole("button", { name: /Continue/i }));
+    fetchMock.mockImplementationOnce(async () => jsonResponse(GENERATE_ALL_RESPONSE));
+    fireEvent.click(screen.getByRole("button", { name: /Generate All Rows/i }));
+    await waitFor(() => expect(screen.getByText(/2 of 3/i)).toBeDefined());
+
+    // Back to mapping, then generate a single document
+    fireEvent.click(screen.getByRole("button", { name: /Back to Mapping/i }));
+    fetchMock.mockImplementationOnce(
+      async () =>
+        ({
+          ok: true,
+          status: 200,
+          blob: async () => new Blob(["pdf-bytes"]),
+          headers: { get: () => 'attachment; filename="John_Doe.pdf"' },
+        }) as unknown as Response
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^✨ Generate Document$/ }));
+
+    await waitFor(() => expect(screen.getByText(/Document Ready/i)).toBeDefined());
+    expect(screen.queryByText(/2 of 3/i)).toBeNull();
+  });
+
+  test("Skip resets the naming column so fallback row numbering applies", async () => {
+    const { fetchMock } = await renderAndUpload();
+    fireEvent.click(screen.getByRole("button", { name: /Skip/i }));
+
+    fetchMock.mockImplementationOnce(async () => jsonResponse(GENERATE_ALL_RESPONSE));
+    fireEvent.click(screen.getByRole("button", { name: /Generate All Rows/i }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+
+    const call = fetchMock.mock.calls[2];
+    const body = JSON.parse((call[1] as RequestInit).body as string);
+    expect(body.filename_column).toBeUndefined();
+  });
+
   test("a non-200 /api/generate-all response shows the error banner and stays on Review", async () => {
     const { fetchMock } = await renderAndUpload();
     fireEvent.click(screen.getByRole("button", { name: /Continue/i }));

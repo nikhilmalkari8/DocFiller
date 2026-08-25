@@ -373,6 +373,25 @@ def test_generate_all_row_with_all_mapped_columns_empty_is_skipped(client):
     assert body["results"][1]["content_base64"] is None
 
 
+def test_generate_all_excel_read_failure_returns_clean_400(client, monkeypatch):
+    session_id = _upload_multi(client, [["John Doe", "2024-01-15"]]).json()["session_id"]
+
+    import main as main_module
+
+    def failing_get_all_rows(file_bytes):
+        raise ValueError("corrupt sheet")
+
+    monkeypatch.setattr(main_module, "get_all_rows", failing_get_all_rows)
+
+    resp = client.post(
+        "/api/generate-all",
+        json={"session_id": session_id, "mapping": {"Name": "Name"}},
+    )
+
+    assert resp.status_code == 400
+    assert "Failed to read Excel rows" in resp.json()["detail"]
+
+
 def test_generate_all_too_many_rows_returns_400(client):
     rows = [[f"Person {i}", "2024-01-01"] for i in range(201)]
     session_id = _upload_multi(client, rows).json()["session_id"]

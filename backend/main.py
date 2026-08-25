@@ -232,7 +232,10 @@ async def generate_all_documents(request: GenerateAllRequest):
     if not session:
         raise HTTPException(404, "Session not found. Please re-upload files.")
 
-    rows = get_all_rows(session["excel_bytes"])
+    try:
+        rows = get_all_rows(session["excel_bytes"])
+    except Exception as e:
+        raise HTTPException(400, f"Failed to read Excel rows: {str(e)}")
 
     if len(rows) > MAX_BULK_ROWS:
         raise HTTPException(
@@ -241,7 +244,10 @@ async def generate_all_documents(request: GenerateAllRequest):
         )
 
     template_ext = session.get("template_ext", ".pdf")
-    filenames = build_filenames(rows, request.filename_column, template_ext)
+    try:
+        filenames = build_filenames(rows, request.filename_column, template_ext)
+    except Exception as e:
+        raise HTTPException(400, f"Failed to derive document filenames: {str(e)}")
 
     results = []
     success_count = 0

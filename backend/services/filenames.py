@@ -39,12 +39,34 @@ def build_filenames(
     for name in basenames:
         counts[name] = counts.get(name, 0) + 1
 
-    filenames = []
+    candidates = []
     for i, name in enumerate(basenames):
         n = i + 1
         if counts[name] > 1:
-            filenames.append(f"{name}_row_{n}{ext}")
+            candidates.append(f"{name}_row_{n}")
         else:
-            filenames.append(f"{name}{ext}")
+            candidates.append(name)
+
+    # Final uniqueness pass: the _row_{n} suffix above only de-duplicates
+    # *original* collisions. It's still possible for a suffixed candidate to
+    # collide with a different row's raw value that happens to sanitize to
+    # that exact string (e.g. one row named "Bond" gets suffixed to
+    # "Bond_row_3", and a separate row is literally named "Bond_row_3") — a
+    # silent duplicate filename here means real data loss in a zip download,
+    # so this pass guarantees true uniqueness regardless of input.
+    seen: dict[str, int] = {}
+    filenames = []
+    for candidate in candidates:
+        if candidate not in seen:
+            seen[candidate] = 1
+            filenames.append(f"{candidate}{ext}")
+        else:
+            seen[candidate] += 1
+            disambiguated = f"{candidate}_dup{seen[candidate]}"
+            while disambiguated in seen:
+                seen[candidate] += 1
+                disambiguated = f"{candidate}_dup{seen[candidate]}"
+            seen[disambiguated] = 1
+            filenames.append(f"{disambiguated}{ext}")
 
     return filenames

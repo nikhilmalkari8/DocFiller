@@ -13,8 +13,8 @@ Frontend and backend are being developed together, no strict ordering — work h
 - Frontend color palette: muted slate/steel-blue replaces the old indigo/violet/purple theme — see `docs/tickets/completed/002-muted-dark-color-palette.md`. Deployed and live at https://docfiller-app.vercel.app.
 
 ## In progress
-- TICKET-003 (bulk "generate all rows" + setup modal + naming column) — backend and frontend implemented, all tests passing, real end-to-end check done locally. Not yet through `qa-reviewer` / moved to `ready-for-deploy/`.
-- TICKET-004 (PDF/Word format choice in the setup modal) — planned, depends on TICKET-003 landing first (edits 003's modal and `/api/generate-all`).
+- TICKET-003 (bulk "generate all rows" + setup modal + naming column) — implemented, QA-reviewed (found and fixed 3 real bugs, most severe a filename-collision data-loss bug in Download All), all tests passing. In `docs/tickets/ready-for-deploy/`, not yet deployed.
+- TICKET-004 (PDF/Word format choice in the setup modal) — planned, next up. Depends on TICKET-003 (edits its modal and `/api/generate-all`).
 
 ## Planned
 _(nothing else queued — see docs/tickets/pending/ for what's active)_

@@ -184,6 +184,11 @@ export default function Home() {
 
   const closeSetupModal = useCallback(() => setShowSetupModal(false), []);
 
+  const handleSkipSetup = useCallback(() => {
+    setFilenameColumn("");
+    setShowSetupModal(false);
+  }, []);
+
   useEffect(() => {
     if (showSetupModal) {
       modalSelectRef.current?.focus();
@@ -212,6 +217,7 @@ export default function Home() {
           session_id: sessionId,
           mapping,
           row_index: rowIndex,
+          filename_column: filenameColumn || undefined,
         }),
       });
 
@@ -225,6 +231,7 @@ export default function Home() {
       const nameMatch = disposition.match(/filename="([^"]+)"/);
       setGeneratedFilename(nameMatch ? nameMatch[1] : "filled_document");
       setGeneratedBlob(blob);
+      setBulkResults(null); // clear any stale bulk-results view from a prior "Generate All Rows" run
       setStep("generate");
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Generation failed");
@@ -427,7 +434,7 @@ export default function Home() {
               <button className="btn btn-primary" onClick={closeSetupModal}>
                 Continue
               </button>
-              <button className="btn btn-secondary" onClick={closeSetupModal}>
+              <button className="btn btn-secondary" onClick={handleSkipSetup}>
                 Skip
               </button>
             </div>

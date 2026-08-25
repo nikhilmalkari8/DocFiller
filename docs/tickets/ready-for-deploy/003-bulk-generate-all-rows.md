@@ -1,7 +1,8 @@
 # TICKET-003: Generate documents for all Excel rows, not just one
 
-**Status:** Pending
+**Status:** Ready for Deploy
 **Created:** 2026-08-25
+**Moved to ready-for-deploy:** 2026-08-25
 
 ## Request
 Nikhil: "when I give you 3 rows in the source excel, I need 3 different documents, you are considering only 1st row I guess. check on that." Investigated first — this isn't a bug, the app was built single-row-by-design: `/api/generate` always takes exactly one `row_index` (default 0), and the frontend's Row Selector lets the user manually pick one row per generate. There is no existing bulk-generation capability at all.
@@ -157,9 +158,20 @@ Backend: `services/excel_parser.get_all_rows`, `services/filenames.build_filenam
 Deviation from plan: the plan's original filename scheme (label = first mapped value) was superseded mid-planning by a direct instruction to use a user-chosen Excel column instead — reflected in the plan before implementation started, not a deviation from what was actually built.
 
 ## Tests
-Backend: 64/64 pytest passing (46 pre-existing + 18 new — `get_all_rows`, `build_filenames` incl. collision/sanitization/truncation, `/api/generate-all` incl. partial failure, skip, 200-row cap, and `filename_column` on `/api/generate`). Frontend: 14/14 Vitest passing (8 modal, 6 bulk flow) + 4/4 `test:tokens` unchanged. `npx tsc --noEmit`, `npm run lint`, `npm run build` all clean.
+Backend: 66/66 pytest passing (46 pre-existing + 20 new — `get_all_rows`, `build_filenames` incl. collision/sanitization/truncation, `/api/generate-all` incl. partial failure, skip, 200-row cap, and `filename_column` on `/api/generate`). Frontend: 16/16 Vitest passing (8 modal, 8 bulk flow) + 4/4 `test:tokens` unchanged. `npx tsc --noEmit`, `npm run lint`, `npm run build` all clean.
 
 Real (non-mocked) end-to-end check done locally: uploaded a genuine 3-row synthetic Excel + PDF template through an actual running backend+frontend via Playwright — setup modal appeared with correct live filename preview, "Generate All Rows (3)" produced 3 result rows, downloaded two individually and confirmed **their content genuinely differs row-to-row** (the exact symptom originally reported), "Download All" produced a valid zip (`PK` magic bytes confirmed), zero browser console errors. Word/.docm path is covered by backend tests here; its own real end-to-end check happens in TICKET-004, which is specifically about format handling.
+
+## QA review (qa-reviewer, independent pass)
+Dispatched against the diff before deploy — read every changed file end-to-end, re-ran both suites independently, and reasoned through (then executed) the specific edge cases worth checking on a real-documents app. Found 3 confirmed bugs, ranked most severe first, all fixed:
+
+1. **`build_filenames` collision suffixing wasn't actually collision-proof — genuine data-loss bug.** The dedup pass only checked for collisions among *original* sanitized basenames, then suffixed every colliding entry with `_row_{n}` — but never re-checked the *suffixed result* against the full final set. A row whose raw value happened to sanitize to exactly `{other_name}_row_{n}` for the exact `n` a colliding row would be suffixed to produced two identical filenames. In `Download All`, `zip.file()` silently overwrites one document with the other — a real financial document lost with no error shown. Reproduced by execution (`test_suffixed_name_colliding_with_another_rows_raw_value_stays_unique`), fixed with a final uniqueness pass that guarantees true uniqueness regardless of input (appends `_dup{n}` to anything still colliding after the row-suffix pass, checked against a running seen-set).
+2. **Regenerating a single document after a prior bulk run showed stale bulk results, hiding the new document.** `handleGenerate` never cleared `bulkResults`, and the render branch picks the bulk results table whenever `bulkResults !== null` — so after Generate All Rows → Back to Mapping → Generate Document, the freshly generated document became inaccessible from the UI (no download button anywhere for it). Fixed: `handleGenerate` now clears `bulkResults` on success. Also wired `filename_column` into `handleGenerate`'s request body while in there, since the backend already supported it (step 8) but the frontend never sent it for the single-row path.
+3. **"Skip" in the setup modal was a no-op duplicate of "Continue."** Both buttons called the same handler; `filenameColumn` is pre-populated with the first Excel column on upload, and Skip never cleared it — so there was no UI path that actually reached the documented `row_{n}` fallback naming behavior. Fixed with a separate `handleSkipSetup` that clears `filenameColumn` before closing the modal.
+
+Also fixed, minor: `get_all_rows`/`build_filenames` calls in `/api/generate-all` were unwrapped — unlike every other fallible call in this codebase, an exception there would 500 the whole batch instead of failing cleanly. Now wrapped, returning a clean 400.
+
+Re-verified after fixes: 66/66 backend, 16/16 frontend, tsc/lint/build/tokens all clean.
 
 ## Impact
 No breaking changes — `/api/generate`'s existing behavior and response shape are unchanged; `filename_column` is optional and additive on both endpoints. New dependencies: `jszip` (frontend runtime), `vitest`/`@vitejs/plugin-react`/`jsdom`/`@testing-library/react`/`@testing-library/dom`/`vite-tsconfig-paths` (frontend dev). New files: `backend/services/filenames.py`, `backend/tests/test_filenames.py`, `frontend/vitest.config.mts`, `frontend/src/app/page.test.tsx`. Sets up TICKET-004 (format choice), which is planned as a direct follow-on edit to this ticket's modal and `/api/generate-all` — must land after this ticket, not independently.
