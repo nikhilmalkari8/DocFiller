@@ -13,3 +13,13 @@ venv/
 frontend/node_modules/
 frontend/.next/
 .vercel
+
+# Real client documents — never commit these. This project only ever commits
+# synthetic, in-code-generated test fixtures (see backend/tests/conftest.py);
+# real uploaded Excel/Word/PDF files must never enter the repo, staged or not.
+*.xlsm
+*.xlsb
+*.docm
+*.dotm
+CHICbondformsheet*
+SME-42*
