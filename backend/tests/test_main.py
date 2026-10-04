@@ -1,3 +1,5 @@
+import pytest
+
 from services.format_converter import ConversionError, ConversionUnavailableError
 from tests.conftest import make_docx_bytes, make_excel_bytes, make_pdf_bytes
 
@@ -777,3 +779,219 @@ def test_generate_all_pdf_format_with_filename_column_names_pdf(client, monkeypa
 
     assert resp.status_code == 200
     assert resp.json()["results"][0]["filename"] == "John_Doe.pdf"
+
+
+# --- transforms in mapping (TICKET-005) ---
+
+AMOUNT_WORDS_SPEC = {"type": "amount_in_words", "source": "Amount"}
+MIXED_MAPPING = {"Name": "Name", "AmountWords": AMOUNT_WORDS_SPEC}
+
+
+def _docx_xml(docx_bytes):
+    import io
+    import zipfile
+
+    with zipfile.ZipFile(io.BytesIO(docx_bytes)) as z:
+        return z.read("word/document.xml").decode("utf-8")
+
+
+def _upload_amounts(client, rows, headers=("Name", "Amount")):
+    resp = _upload(
+        client,
+        excel_bytes=make_excel_bytes(list(headers), rows),
+        template_bytes=make_docx_bytes(["Name", "AmountWords"]),
+        template_name="t.docx",
+    )
+    assert resp.status_code == 200
+    return resp.json()["session_id"]
+
+
+def test_generate_accepts_mixed_string_and_spec_mapping(client):
+    sid = _upload_amounts(client, [["John Doe", 1200000]])
+    resp = client.post("/api/generate", json={"session_id": sid, "mapping": MIXED_MAPPING, "row_index": 0})
+    assert resp.status_code == 200
+    xml = _docx_xml(resp.content)
+    assert "John Doe" in xml
+    assert "one million two hundred thousand and 00/100 dollars" in xml
+
+
+def test_generate_all_accepts_mixed_string_and_spec_mapping(client):
+    import base64
+
+    sid = _upload_amounts(client, [["John Doe", 1200000]])
+    resp = client.post("/api/generate-all", json={"session_id": sid, "mapping": MIXED_MAPPING})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success_count"] == 1
+    xml = _docx_xml(base64.b64decode(body["results"][0]["content_base64"]))
+    assert "John Doe" in xml
+    assert "one million two hundred thousand and 00/100 dollars" in xml
+
+
+def test_generate_transform_handles_a_float_numeric_cell(client):
+    sid = _upload_amounts(client, [["John Doe", 1234.56]])
+    resp = client.post("/api/generate", json={"session_id": sid, "mapping": MIXED_MAPPING, "row_index": 0})
+    assert resp.status_code == 200
+    assert "one thousand two hundred thirty-four and 56/100 dollars" in _docx_xml(resp.content)
+
+
+INVALID_SPECS = [
+    pytest.param({"type": "percent", "source": "Amount"}, id="unknown_type"),
+    pytest.param({"type": "amount_in_words", "source": "No Such Column"}, id="source_not_a_column"),
+    pytest.param(
+        {"type": "date_format", "source": "Amount", "format": "%H"}, id="unsupported_date_directive"
+    ),
+]
+
+
+@pytest.mark.parametrize("bad_spec", INVALID_SPECS)
+@pytest.mark.parametrize("endpoint", ["/api/generate", "/api/generate-all"])
+def test_invalid_spec_is_rejected_with_400_naming_the_placeholder(client, endpoint, bad_spec):
+    sid = _upload_amounts(client, [["John Doe", 1200000]])
+    resp = client.post(
+        endpoint,
+        json={"session_id": sid, "mapping": {"Name": "Name", "AmountWords": bad_spec}},
+    )
+    assert resp.status_code == 400
+    assert "AmountWords" in resp.json()["detail"]
+
+
+def test_invalid_spec_in_bulk_fails_before_any_row_is_filled(client, monkeypatch):
+    import main as main_module
+
+    calls = []
+    monkeypatch.setattr(main_module, "fill_word_template", lambda *a, **k: calls.append(1) or b"x")
+    monkeypatch.setattr(main_module, "fill_pdf", lambda *a, **k: calls.append(1) or b"x")
+
+    sid = _upload_amounts(client, [["John Doe", 1200000], ["Jane Smith", 5000]])
+    resp = client.post(
+        "/api/generate-all",
+        json={"session_id": sid, "mapping": {"AmountWords": {"type": "nope"}}},
+    )
+    assert resp.status_code == 400
+    assert calls == []
+
+
+def test_mapping_value_of_the_wrong_json_type_is_422(client):
+    sid = _upload_amounts(client, [["John Doe", 1200000]])
+    resp = client.post("/api/generate", json={"session_id": sid, "mapping": {"Name": 5}})
+    assert resp.status_code == 422
+
+
+def test_generate_bad_cell_value_for_a_transform_is_400_naming_the_placeholder(client):
+    sid = _upload_amounts(client, [["John Doe", "TBD"]])
+    resp = client.post("/api/generate", json={"session_id": sid, "mapping": MIXED_MAPPING, "row_index": 0})
+    assert resp.status_code == 400
+    assert "AmountWords" in resp.json()["detail"]
+
+
+def test_generate_all_row_transform_error_does_not_block_other_rows(client):
+    sid = _upload_amounts(client, [["John Doe", 1200000], ["Jane Smith", "TBD"], ["Ann Lee", 5000]])
+    resp = client.post("/api/generate-all", json={"session_id": sid, "mapping": MIXED_MAPPING})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success_count"] == 2
+    assert body["error_count"] == 1
+    assert [r["status"] for r in body["results"]] == ["ok", "error", "ok"]
+    assert body["results"][1]["content_base64"] is None
+    assert "AmountWords" in body["results"][1]["error"]
+
+
+def test_generate_all_fully_blank_row_is_skipped_not_errored_with_transforms(client):
+    sid = _upload_amounts(client, [["John Doe", 1200000], ["", ""]])
+    resp = client.post("/api/generate-all", json={"session_id": sid, "mapping": MIXED_MAPPING})
+
+    body = resp.json()
+    assert resp.status_code == 200
+    assert body["skipped_count"] == 1
+    assert body["error_count"] == 0
+    assert [r["status"] for r in body["results"]] == ["ok", "skipped"]
+
+
+def test_generate_all_blank_amount_with_a_name_present_is_an_error_not_a_skip(client):
+    sid = _upload_amounts(client, [["John Doe", ""]])
+    resp = client.post("/api/generate-all", json={"session_id": sid, "mapping": MIXED_MAPPING})
+
+    body = resp.json()
+    assert body["error_count"] == 1
+    assert body["skipped_count"] == 0
+    assert body["results"][0]["status"] == "error"
+
+
+def test_generate_all_skip_is_decided_on_raw_columns_not_join_separators(client):
+    """A join template with literal separators yields non-blank text from blank
+    inputs ('{City}, {State}' -> ','); that must not stop a blank row being skipped."""
+    sid = _upload_amounts(client, [["", ""]], headers=("City", "State"))
+    mapping = {"AmountWords": {"type": "join", "template": "{City}, {State}"}}
+    resp = client.post("/api/generate-all", json={"session_id": sid, "mapping": mapping})
+
+    body = resp.json()
+    assert body["skipped_count"] == 1
+    assert body["results"][0]["status"] == "skipped"
+
+
+# --- /api/map transform opt-in (TICKET-005, D7) ---
+
+def _map_request(sid, **extra):
+    return {
+        "session_id": sid,
+        "excel_columns": ["Name", "Amount"],
+        "placeholders": ["Name", "AmountWords"],
+        **extra,
+    }
+
+
+def test_map_does_not_allow_transforms_by_default(client, monkeypatch):
+    import main as main_module
+
+    seen = {}
+
+    def fake_map_fields(**kwargs):
+        seen.update(kwargs)
+        return {"Name": "Name", "AmountWords": ""}
+
+    monkeypatch.setattr(main_module, "map_fields", fake_map_fields)
+    sid = _upload_amounts(client, [["John Doe", 1200000]])
+
+    resp = client.post("/api/map", json=_map_request(sid))
+
+    assert resp.status_code == 200
+    assert seen["allow_transforms"] is False
+
+
+def test_map_can_opt_in_to_transforms_and_returns_the_spec_verbatim(client, monkeypatch):
+    import main as main_module
+
+    seen = {}
+
+    def fake_map_fields(**kwargs):
+        seen.update(kwargs)
+        return {"Name": "Name", "AmountWords": AMOUNT_WORDS_SPEC}
+
+    monkeypatch.setattr(main_module, "map_fields", fake_map_fields)
+    sid = _upload_amounts(client, [["John Doe", 1200000]])
+
+    resp = client.post("/api/map", json=_map_request(sid, allow_transforms=True))
+
+    assert resp.status_code == 200
+    assert seen["allow_transforms"] is True
+    assert resp.json()["mapping"]["AmountWords"] == AMOUNT_WORDS_SPEC
+
+
+def test_non_string_source_in_a_spec_is_400_not_500(client):
+    sid = _upload_amounts(client, [["John Doe", 1200000]])
+    bad = {"AmountWords": {"type": "copy", "source": ["Amount"]}}
+    for endpoint in ("/api/generate", "/api/generate-all"):
+        resp = client.post(endpoint, json={"session_id": sid, "mapping": bad})
+        assert resp.status_code == 400, endpoint
+        assert "AmountWords" in resp.json()["detail"]
+
+
+def test_generate_strict_transform_on_out_of_range_row_is_400(client):
+    """D9: plain-string mappings stay lenient (blank doc), but a strict transform
+    on a row past the end of the sheet must fail rather than print a blank amount."""
+    sid = _upload_amounts(client, [["John Doe", 1200000]])
+    resp = client.post("/api/generate", json={"session_id": sid, "mapping": MIXED_MAPPING, "row_index": 99})
+    assert resp.status_code == 400
+    assert "AmountWords" in resp.json()["detail"]

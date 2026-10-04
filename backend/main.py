@@ -3,7 +3,7 @@ import asyncio
 import base64
 import os
 import uuid
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -26,6 +26,13 @@ from services.format_converter import (
 from services.pdf_processor import extract_placeholders, fill_pdf
 from services.word_processor import extract_merge_fields, fill_word_template, flatten_merge_fields
 from services.llm_mapper import map_fields
+from services.transforms import (
+    CATALOG,
+    TransformError,
+    TransformSpecError,
+    apply_transform,
+    validate_spec,
+)
 
 app = FastAPI(title="DocFiller API", version="1.0.0")
 
@@ -63,11 +70,19 @@ class MapRequest(BaseModel):
     excel_columns: list[str]
     placeholders: list[str]
     excel_preview: Optional[list[dict]] = None
+    # Off unless the client opts in: the current UI can only display plain
+    # column names, so a transform spec would look "unmapped" yet still be applied.
+    allow_transforms: bool = False
+
+
+# A mapping value is either an Excel column name (today's behaviour) or a
+# transform spec object, e.g. {"type": "amount_in_words", "source": "Penal Sum"}.
+MappingValue = str | dict[str, Any]
 
 
 class GenerateRequest(BaseModel):
     session_id: str
-    mapping: dict[str, str]
+    mapping: dict[str, MappingValue]
     row_index: Optional[int] = 0
     filename_column: Optional[str] = None
     output_format: OutputFormat = None
@@ -75,7 +90,7 @@ class GenerateRequest(BaseModel):
 
 class GenerateAllRequest(BaseModel):
     session_id: str
-    mapping: dict[str, str]
+    mapping: dict[str, MappingValue]
     output_format: OutputFormat = None
     filename_column: Optional[str] = None
 
@@ -171,6 +186,7 @@ async def map_columns(request: MapRequest):
             excel_columns=request.excel_columns,
             placeholders=request.placeholders,
             excel_preview=request.excel_preview,
+            allow_transforms=request.allow_transforms,
         )
     except Exception as e:
         raise HTTPException(500, f"Mapping failed: {str(e)}")
@@ -178,12 +194,46 @@ async def map_columns(request: MapRequest):
     return {"mapping": mapping}
 
 
-def _build_fill_values(mapping: dict[str, str], row_data: dict[str, str]) -> dict[str, str]:
-    """Build the values dict: placeholder_name -> actual value from Excel."""
+def _validate_mapping(mapping: dict[str, MappingValue], columns: list[str]) -> None:
+    """Reject the whole request (400) if any transform spec is itself invalid.
+
+    A bad spec is a request bug, not a messy-row problem — checking it once up
+    front avoids filling N rows only to report N identical per-row errors.
+    """
+    for placeholder, target in mapping.items():
+        if isinstance(target, dict):
+            try:
+                validate_spec(target, columns)
+            except TransformSpecError as e:
+                raise HTTPException(400, f"Invalid transform for '{placeholder}': {e}")
+
+
+def _referenced_columns(mapping: dict[str, MappingValue]) -> set[str]:
+    """Every Excel column the mapping reads (specs must already be validated)."""
+    columns: set[str] = set()
+    for target in mapping.values():
+        if isinstance(target, dict):
+            columns |= CATALOG[target["type"]].referenced_columns(target)
+        elif target:
+            columns.add(target)
+    return columns
+
+
+def _build_fill_values(mapping: dict[str, MappingValue], row_data: dict[str, str]) -> dict[str, str]:
+    """Build the values dict: placeholder_name -> value for this row.
+
+    A string mapping value copies that Excel column (blank if absent); a spec
+    object is run through the transform engine.
+    """
     fill_values = {}
-    for placeholder, column in mapping.items():
-        if column and column in row_data:
-            fill_values[placeholder] = row_data[column]
+    for placeholder, target in mapping.items():
+        if isinstance(target, dict):
+            try:
+                fill_values[placeholder] = apply_transform(target, row_data)
+            except TransformError as e:
+                raise TransformError(f"Placeholder '{placeholder}': {e}") from e
+        elif target and target in row_data:
+            fill_values[placeholder] = row_data[target]
         else:
             fill_values[placeholder] = ""  # Leave empty if no mapping
     return fill_values
@@ -251,13 +301,18 @@ async def generate_document(request: GenerateRequest):
     if not session:
         raise HTTPException(404, "Session not found. Please re-upload files.")
 
+    _validate_mapping(request.mapping, session["excel_data"]["columns"])
+
     # Get the row data from Excel
     try:
         row_data = get_row_data(session["excel_bytes"], request.row_index or 0)
     except Exception as e:
         raise HTTPException(400, f"Failed to read row {request.row_index}: {str(e)}")
 
-    fill_values = _build_fill_values(request.mapping, row_data)
+    try:
+        fill_values = _build_fill_values(request.mapping, row_data)
+    except TransformError as e:
+        raise HTTPException(400, str(e))
 
     try:
         filled_doc, mime_type, template_ext = _fill_document(session, fill_values)
@@ -292,6 +347,8 @@ async def generate_all_documents(request: GenerateAllRequest):
     if not session:
         raise HTTPException(404, "Session not found. Please re-upload files.")
 
+    _validate_mapping(request.mapping, session["excel_data"]["columns"])
+
     template_type = session.get("template_type", "pdf")
     template_ext = session.get("template_ext", ".pdf")
     requested_format = request.output_format or "original"
@@ -322,16 +379,19 @@ async def generate_all_documents(request: GenerateAllRequest):
     except Exception as e:
         raise HTTPException(400, f"Failed to derive document filenames: {str(e)}")
 
+    mapped_columns = _referenced_columns(request.mapping)
     results = []
     success_count = 0
     error_count = 0
     skipped_count = 0
 
     for i, row_data in enumerate(rows):
-        fill_values = _build_fill_values(request.mapping, row_data)
         label = row_data.get(request.filename_column) if request.filename_column else None
 
-        if not any(fill_values.values()):
+        # Skip is decided on the raw source columns, before any transform runs:
+        # a blank row must be "skipped", not turned into an error by a strict
+        # transform or kept alive by separator text a join produces from blanks.
+        if not any(row_data.get(col) for col in mapped_columns):
             skipped_count += 1
             results.append(
                 {
@@ -342,6 +402,23 @@ async def generate_all_documents(request: GenerateAllRequest):
                     "mime_type": None,
                     "content_base64": None,
                     "error": "Row has no data for any mapped column",
+                }
+            )
+            continue
+
+        try:
+            fill_values = _build_fill_values(request.mapping, row_data)
+        except TransformError as e:
+            error_count += 1
+            results.append(
+                {
+                    "row_index": i,
+                    "status": "error",
+                    "label": label,
+                    "filename": None,
+                    "mime_type": None,
+                    "content_base64": None,
+                    "error": str(e),
                 }
             )
             continue

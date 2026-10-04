@@ -15,10 +15,17 @@ Frontend and backend are being developed together, no strict ordering — work h
 - PDF/Word output format choice via headless LibreOffice conversion — see `docs/tickets/completed/004-format-choice-download.md`. QA-reviewed (2 bugs found and fixed: Skip permanently hiding the Format selector, and an unhandled LibreOffice subprocess timeout able to crash an entire bulk batch). Deployed and live — `GET /api/health` confirms `pdf_conversion: true` on production, verified with a real end-to-end PDF generation round trip against the live backend using synthetic data.
 
 ## In progress
-_(nothing in flight — see docs/tickets/pending/ for what's active)_
+_(nothing in flight — TICKET-005 is implemented and awaiting deploy confirmation, below)_
+
+## Ready for deploy
+- **TICKET-005 — Transformation engine** (`docs/tickets/ready-for-deploy/005-transformation-engine.md`). Sub-project 1 of the "zero-config bond form" goal. Implemented with TDD (262 backend tests pass, up from 103), independently QA-reviewed (2 bugs found and fixed), verified end-to-end against a local server with synthetic data. **Not deployed.** Backward compatible and inert in production: no frontend change, and `/api/map` doesn't return transforms unless asked.
+- Pending: **TICKET-006** (`docs/tickets/pending/006-word-fill-xml-escaping.md`) — Word fill doesn't XML-escape values; not yet reproduced.
 
 ## Planned
-_(nothing else queued — see docs/tickets/pending/ for what's active)_
+Goal (Nikhil, 2026-10-04): upload an untagged bond form (`.docx` or `.pdf`) + Excel → AI finds fields, maps them, applies transformations (amount in words, dates, currency, join/split…) → generates all forms, with as close to zero manual configuration as possible. The same form is reused across batches, so a form is analysed once and saved as a reviewable **recipe**. Detection approach: text + geometry → LLM (vision LLM only later, if scanned PDFs matter). Remaining sub-projects, in order, each with its own spec → plan → build cycle:
+2. Word field detection + write-back + recipe model
+3. PDF field detection + write-back (exact original typography is not achievable for PDFs with subset fonts — closest visual match)
+4. Recipe storage (Railway volume vs Postgres, undecided) + review UI
 
 ## Done (deployment infra)
 - Vercel deployment pipeline fully fixed and confirmed working end-to-end: `docfiller-app` (the real production project) is connected to `nikhilmalkari8/DocFiller` on GitHub with Root Directory set to `frontend`, the unrelated stray project `doc-filler` has been deleted, and a real git-triggered production build succeeded (commit `7329b11`, deployment `dpl_FH42zYQJTHTSh6ZkLg4kp1W1QBkN`, `READY`). Every future push to `main` now auto-deploys both backend (Railway) and frontend (Vercel) with no manual steps. See `docs/DECISIONS.md` for the full discovery.
