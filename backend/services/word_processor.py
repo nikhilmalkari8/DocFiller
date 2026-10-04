@@ -2,6 +2,17 @@
 import io
 import re
 import zipfile
+from xml.sax.saxutils import escape
+
+class UnsupportedCharacterError(ValueError):
+    """A value contains a character XML 1.0 cannot represent."""
+
+
+# XML 1.0 forbids these outright (everything below 0x20 except tab/newline/CR,
+# lone surrogates, and U+FFFE/U+FFFF); no escaping can make them legal. Failing is safer than
+# silently deleting characters from a legal document.
+_XML_ILLEGAL_CHARS = re.compile("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\ud800-\\udfff\\ufffe\\uffff]")
+
 
 # One <w:r>...</w:r> run element containing a specific structural marker —
 # used to strip the four structural runs of a MERGEFIELD field code
@@ -45,8 +56,14 @@ def fill_word_template(doc_bytes: bytes, fill_values: dict[str, str]) -> bytes:
     doc_xml = file_map["word/document.xml"].decode("utf-8")
 
     for field_name, value in fill_values.items():
-        safe_value = str(value) if value is not None else ""
-        doc_xml = doc_xml.replace(f"\u00ab{field_name}\u00bb", safe_value)
+        text = str(value) if value is not None else ""
+        if _XML_ILLEGAL_CHARS.search(text):
+            raise UnsupportedCharacterError(
+                f"Value for '{field_name}' contains a character that can't be stored in a Word document"
+            )
+        # Escape the *value* (&, <, >) so it can't corrupt document.xml. Never the
+        # search key: field names come out of the raw XML already entity-encoded.
+        doc_xml = doc_xml.replace(f"\u00ab{field_name}\u00bb", escape(text))
 
     file_map["word/document.xml"] = doc_xml.encode("utf-8")
 

@@ -24,7 +24,12 @@ from services.format_converter import (
     is_conversion_available,
 )
 from services.pdf_processor import extract_placeholders, fill_pdf
-from services.word_processor import extract_merge_fields, fill_word_template, flatten_merge_fields
+from services.word_processor import (
+    UnsupportedCharacterError,
+    extract_merge_fields,
+    fill_word_template,
+    flatten_merge_fields,
+)
 from services.llm_mapper import map_fields
 from services.transforms import (
     CATALOG,
@@ -316,6 +321,8 @@ async def generate_document(request: GenerateRequest):
 
     try:
         filled_doc, mime_type, template_ext = _fill_document(session, fill_values)
+    except UnsupportedCharacterError as e:
+        raise HTTPException(400, str(e))
     except Exception as e:
         raise HTTPException(500, f"Failed to generate document: {str(e)}")
 

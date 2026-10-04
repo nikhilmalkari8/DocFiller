@@ -288,3 +288,22 @@ def test_real_batch_conversion_of_three_documents_each_shows_own_value():
         text = "".join(page.get_text() for page in doc)
         doc.close()
         assert expected_name in text
+
+
+@pytest.mark.skipif(shutil.which("soffice") is None, reason="LibreOffice not installed")
+def test_real_conversion_preserves_xml_special_characters():
+    """TICKET-006: unescaped '&'/'<' made document.xml malformed and LibreOffice
+    refused to convert it (500 on /api/generate, an error row in bulk)."""
+    from services.word_processor import fill_word_template, flatten_merge_fields
+
+    docx = make_valid_docx_bytes(["Name"])
+    filled = fill_word_template(docx, {"Name": "Smith & Sons LLC <Ltd>"})
+    pdf_bytes = convert_to_pdf(flatten_merge_fields(filled), ".docx")
+
+    doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+    text = "".join(page.get_text() for page in doc)
+    doc.close()
+
+    assert "Smith & Sons LLC <Ltd>" in text
+    assert "&amp;" not in text
+    assert "&lt;" not in text

@@ -1,7 +1,7 @@
 # Testing
 
 ## Current state
-Backend: full test suite exists (262 tests, `backend/tests/`), covering all service modules plus all API routes — see `docs/tickets/ready-for-deploy/001-backend-test-suite.md` (moves to `completed/` once deployed) for the original baseline and why. Every ticket from here on follows strict TDD (failing test before implementation), regardless of task size, per standing preference in the global `CLAUDE.md`.
+Backend: full test suite exists (302 tests, `backend/tests/`), covering all service modules plus all API routes — see `docs/tickets/ready-for-deploy/001-backend-test-suite.md` (moves to `completed/` once deployed) for the original baseline and why. Every ticket from here on follows strict TDD (failing test before implementation), regardless of task size, per standing preference in the global `CLAUDE.md`.
 
 Frontend: a real single-page UI exists (`frontend/src/app/page.tsx`, `globals.css`). Vitest + RTL landed with TICKET-003 (bulk "generate all rows" + setup modal), the first ticket that changed real component behavior; TICKET-004 (PDF/Word format choice) added to the same file. 27 tests total in `frontend/src/app/page.test.tsx`. See "Frontend — Vitest + React Testing Library" below for conventions, and "Frontend — interim token harness" for the earlier CSS-only exception (TICKET-002).
 

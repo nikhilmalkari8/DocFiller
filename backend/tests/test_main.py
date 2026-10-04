@@ -995,3 +995,87 @@ def test_generate_strict_transform_on_out_of_range_row_is_400(client):
     resp = client.post("/api/generate", json={"session_id": sid, "mapping": MIXED_MAPPING, "row_index": 99})
     assert resp.status_code == 400
     assert "AmountWords" in resp.json()["detail"]
+
+
+# --- Word values containing XML special characters (TICKET-006) ---
+
+def _upload_word_with_name(client, name_value):
+    resp = _upload(
+        client,
+        excel_bytes=make_excel_bytes(["Name", "Date"], [[name_value, "2024-01-15"]]),
+        template_bytes=make_docx_bytes(["Name", "Date"]),
+        template_name="t.docx",
+    )
+    assert resp.status_code == 200
+    return resp.json()["session_id"]
+
+
+def _wt_text_of(docx_bytes):
+    import xml.etree.ElementTree as ET
+
+    root = ET.fromstring(_docx_xml(docx_bytes).encode("utf-8"))  # raises if malformed
+    ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    return "".join(t.text or "" for t in root.iter(f"{ns}t"))
+
+
+def test_generate_word_original_with_ampersand_returns_a_well_formed_docx(client):
+    sid = _upload_word_with_name(client, "Smith & Sons LLC")
+    resp = client.post(
+        "/api/generate", json={"session_id": sid, "mapping": {"Name": "Name", "Date": "Date"}}
+    )
+    assert resp.status_code == 200
+    assert "Smith & Sons LLC" in _wt_text_of(resp.content)
+
+
+def test_generate_all_word_with_ampersand_row_is_ok_and_well_formed(client):
+    import base64
+
+    sid = _upload_word_with_name(client, "Smith & Sons LLC")
+    resp = client.post(
+        "/api/generate-all", json={"session_id": sid, "mapping": {"Name": "Name", "Date": "Date"}}
+    )
+    body = resp.json()
+    assert body["success_count"] == 1
+    assert "Smith & Sons LLC" in _wt_text_of(base64.b64decode(body["results"][0]["content_base64"]))
+
+
+def test_generate_word_with_an_xml_illegal_character_is_a_clean_400(client, monkeypatch):
+    """openpyxl refuses such characters in a cell, so inject it at the row-reading seam."""
+    import main as main_module
+
+    sid = _upload_word_with_name(client, "placeholder")
+    monkeypatch.setattr(
+        main_module, "get_row_data", lambda *_a, **_k: {"Name": "bad\x0bvalue", "Date": "2024-01-15"}
+    )
+    resp = client.post(
+        "/api/generate", json={"session_id": sid, "mapping": {"Name": "Name", "Date": "Date"}}
+    )
+    assert resp.status_code == 400
+    assert "Name" in resp.json()["detail"]
+    assert "bad" not in resp.json()["detail"]
+
+
+def test_generate_all_xml_illegal_character_is_a_per_row_error_not_a_batch_failure(client, monkeypatch):
+    import base64
+    import main as main_module
+
+    sid = _upload_word_with_name(client, "placeholder")
+    monkeypatch.setattr(
+        main_module,
+        "get_all_rows",
+        lambda *_a, **_k: [
+            {"Name": "Fine & Co", "Date": "2024-01-15"},
+            {"Name": "bad\x0bvalue", "Date": "2024-01-15"},
+            {"Name": "Also Fine", "Date": "2024-01-15"},
+        ],
+    )
+    resp = client.post(
+        "/api/generate-all", json={"session_id": sid, "mapping": {"Name": "Name", "Date": "Date"}}
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [r["status"] for r in body["results"]] == ["ok", "error", "ok"]
+    assert "Name" in body["results"][1]["error"]
+    assert "bad" not in body["results"][1]["error"]
+    assert "Fine & Co" in _wt_text_of(base64.b64decode(body["results"][0]["content_base64"]))
